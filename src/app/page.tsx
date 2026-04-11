@@ -39,6 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { BIP39_ENGLISH, phraseToIndices } from "@/lib/bip39Words";
 
 const HARDWARE_MODE =
   process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
@@ -219,6 +220,26 @@ class DeviceConnection {
     this.reader = null;
     this.writer = null;
   }
+}
+
+/** Arduino sends SEED_BEGIN → 12× SEED_IDX:n → SEED_END after SETID (indices 0–2047). */
+async function collectSeedWordsFromDevice(
+  device: DeviceConnection,
+): Promise<string[]> {
+  await device.waitFor((l) => l === "SEED_BEGIN", 12_000);
+  const words: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const line = await device.waitFor((l) => l.startsWith("SEED_IDX:"), 6000);
+    const n = Number.parseInt(line.slice(9), 10);
+    if (Number.isNaN(n) || n < 0 || n > 2047) {
+      throw new Error("Invalid SEED_IDX");
+    }
+    const w = BIP39_ENGLISH[n];
+    if (w === undefined) throw new Error("Invalid SEED_IDX");
+    words.push(w);
+  }
+  await device.waitFor((l) => l === "SEED_END", 6000);
+  return words;
 }
 
 function processSerialLine(
@@ -546,20 +567,13 @@ export default function HomePage() {
     if (!device) return;
     try {
       await device.send(`SETID ${ledger}`);
-
-      const res = await fetch("/api/seed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate", wallet: ledger }),
-      });
-      const data = (await res.json()) as { words?: string[]; error?: string };
-      if (!res.ok || !data.words) {
-        toast.error(data.error ?? "Failed to generate seed phrase");
-        return;
-      }
-      setSeedBackupModal({ ledger, words: data.words });
+      await device.waitFor((l) => l === "ID_SAVED", 5000);
+      const words = await collectSeedWordsFromDevice(device);
+      setSeedBackupModal({ ledger, words });
     } catch {
-      toast.error("Failed to register device");
+      toast.error(
+        "Registration or seed transfer failed — check USB serial connection",
+      );
     }
   };
 
@@ -572,43 +586,56 @@ export default function HomePage() {
   const confirmRecover = async () => {
     if (!recoverModal) return;
     const { ledger } = recoverModal;
+    const device =
+      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    if (!device) {
+      toast.error(`Ledger ${ledger} is not connected`);
+      return;
+    }
+    const indices = phraseToIndices(recoverPhraseInput);
+    if (!indices) {
+      toast.error(
+        "Enter exactly 12 valid English BIP-39 words from the word list",
+      );
+      return;
+    }
     setVerifyingPhrase(true);
     try {
-      const res = await fetch("/api/seed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "verify",
-          wallet: ledger,
-          phrase: recoverPhraseInput.trim(),
-        }),
-      });
-      const data = (await res.json()) as { valid?: boolean; error?: string };
-      if (!res.ok) {
-        toast.error(data.error ?? "Verification failed");
-        return;
-      }
-      if (!data.valid) {
-        toast.error("Incorrect seed phrase — try again");
-        return;
-      }
-
-      const device =
-        ledger === "A" ? deviceARef.current : deviceBRef.current;
-      if (!device) {
-        toast.error(`Ledger ${ledger} is not connected`);
-        return;
+      await device.send("SEED_VERIFY");
+      await device.waitFor((l) => l === "SVI_READY", 8000);
+      for (let i = 0; i < 12; i++) {
+        const idx = indices[i];
+        if (idx === undefined) throw new Error("missing index");
+        await device.send(`SVI ${idx}`);
+        const line = await device.waitFor(
+          (l) =>
+            l === "SVI_NEXT" || l === "SEED_OK" || l === "SEED_BAD",
+          8000,
+        );
+        if (line === "SEED_BAD") {
+          toast.error("Incorrect seed phrase — try again");
+          return;
+        }
+        if (i < 11 && line !== "SVI_NEXT") {
+          toast.error("Unexpected response from device");
+          return;
+        }
+        if (i === 11 && line !== "SEED_OK") {
+          toast.error("Unexpected response from device");
+          return;
+        }
       }
       await device.send("RECOVER");
       await device
-        .waitFor((l) => l === "RECOVERED", 3000)
+        .waitFor((l) => l === "RECOVERED", 5000)
         .catch(() => null);
       setRecoverModal(null);
+      setRecoverPhraseInput("");
       toast.success(
         `Ledger ${ledger} recovered — go through setup again`,
       );
     } catch {
-      toast.error("Recovery failed");
+      toast.error("Recovery failed — check device is in WIPED mode");
     } finally {
       setVerifyingPhrase(false);
     }
@@ -960,8 +987,10 @@ export default function HomePage() {
                 Backup Your Seed Phrase
               </h2>
               <p className="text-muted-foreground text-sm">
-                Write these 12 words down in order. You will need them to
-                recover your wallet. Never share them with anyone.
+                These words were generated on your Arduino and the indices are
+                stored in device memory. This page maps them to the standard
+                BIP-39 English list. Write them down in order — you need them
+                after a PIN wipe. Never share them with anyone.
               </p>
             </div>
 
