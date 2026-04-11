@@ -305,3 +305,83 @@ if (process.argv[2] === "list") {
   ports.forEach((p) => console.log(`  ${p.path}  —  ${p.friendlyName ?? p.manufacturer ?? ""}`));
   process.exit(0);
 }
+
+// =============================================================================
+// Challenge-response auth helper (added for v3 protected firmware)
+// Must match SECRET_KEY in ledger.ino and XOR_KEY in cryptx_dump.py
+// =============================================================================
+
+const SECRET_KEY = Buffer.from([0x4B, 0x72, 0x79, 0x70, 0x74, 0x58, 0x21, 0x01]);
+
+/**
+ * Performs CHALLENGE → AUTH handshake and returns decoded stats.
+ * Throws if auth fails or device doesn't respond in time.
+ */
+async function getAuthenticatedStats(port, parser) {
+  // Step 1: request a nonce
+  const nonceRaw = await sendCmd(port, parser, "CHALLENGE", CMD_TIMEOUT_MS,
+    new Set(["NONCE_WAIT"])  // we'll intercept NONCE: lines manually below
+  ).catch(() => null);
+
+  // Actually listen for NONCE: prefix manually
+  port.write("CHALLENGE\n");
+  const nonceLine = await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("NONCE timeout")), CMD_TIMEOUT_MS);
+    function h(raw) {
+      const line = raw.trim();
+      if (line.startsWith("NONCE:")) {
+        clearTimeout(t);
+        parser.removeListener("data", h);
+        resolve(line);
+      }
+    }
+    parser.on("data", h);
+  });
+
+  // Step 2: parse the 8-byte nonce
+  const nonceHex = nonceLine.slice(6);  // strip "NONCE:"
+  const nonce = Buffer.from(nonceHex, "hex");
+
+  // Step 3: compute response = nonce[i] XOR SECRET_KEY[i]
+  const response = Buffer.alloc(8);
+  for (let i = 0; i < 8; i++) {
+    response[i] = nonce[i] ^ SECRET_KEY[i];
+  }
+
+  // Step 4: send AUTH and wait for STATS or AUTH_FAIL
+  port.write(`AUTH ${response.toString("hex").toUpperCase()}\n`);
+  const result = await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("AUTH timeout")), CMD_TIMEOUT_MS);
+    function h(raw) {
+      const line = raw.trim();
+      if (line.startsWith("STATS:") || line === "AUTH_FAIL") {
+        clearTimeout(t);
+        parser.removeListener("data", h);
+        resolve(line);
+      }
+    }
+    parser.on("data", h);
+  });
+
+  if (result === "AUTH_FAIL") throw new Error("AUTH_FAIL: wrong key or stale nonce");
+  return result;  // "STATS:<c>,<r>,<streak>,<locked>"
+}
+
+// GET /stats?wallet=A  (now uses challenge-response)
+// Replace the old /stats handler by re-registering it
+app.get("/stats/authenticated", async (req, res) => {
+  const wallet = req.query.wallet;
+  if (wallet !== "A" && wallet !== "B") {
+    return res.status(400).json({ error: 'wallet must be "A" or "B"' });
+  }
+  const { port, parser } = getDevice(wallet);
+  if (!port.isOpen) return res.status(503).json({ error: `Ledger ${wallet} not connected` });
+
+  try {
+    const statsLine = await getAuthenticatedStats(port, parser);
+    parseStats(wallet, statsLine);
+    res.json(deviceMeta[wallet]);
+  } catch (err) {
+    res.status(401).json({ error: err.message });
+  }
+});
