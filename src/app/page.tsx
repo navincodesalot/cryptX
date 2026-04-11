@@ -416,6 +416,7 @@ export default function HomePage() {
     ledger: "A" | "B";
     words: string[];
   } | null>(null);
+  const [seedDownloaded, setSeedDownloaded] = useState(false);
   const [recoverModal, setRecoverModal] = useState<{
     ledger: "A" | "B";
   } | null>(null);
@@ -442,6 +443,21 @@ export default function HomePage() {
       deviceBRef.current?.close();
     };
   }, []);
+
+  // Auto-open recovery modal the moment a device is wiped
+  useEffect(() => {
+    if (hwStateA.connected && hwStateA.mode === "WIPED") {
+      setRecoverPhraseInput("");
+      setRecoverModal((prev) => prev ?? { ledger: "A" });
+    }
+  }, [hwStateA.mode, hwStateA.connected]);
+
+  useEffect(() => {
+    if (hwStateB.connected && hwStateB.mode === "WIPED") {
+      setRecoverPhraseInput("");
+      setRecoverModal((prev) => prev ?? { ledger: "B" });
+    }
+  }, [hwStateB.mode, hwStateB.connected]);
 
   /* ── Data fetching ─────────────────────────────────────────────────────── */
   const fetchBalances = useCallback(async () => {
@@ -612,6 +628,7 @@ export default function HomePage() {
       await device.send(`SETID ${ledger}`);
       await doneP;
       const words = parseSeedLinesToWords(buf);
+      setSeedDownloaded(false);
       setSeedBackupModal({ ledger, words });
     } catch (e) {
       if (!finished) {
@@ -1083,6 +1100,7 @@ export default function HomePage() {
                   a.download = `ledger-${seedBackupModal.ledger}-seed.txt`;
                   a.click();
                   URL.revokeObjectURL(url);
+                  setSeedDownloaded(true);
                 }}
               >
                 <Download className="mr-2 size-4" />
@@ -1090,15 +1108,18 @@ export default function HomePage() {
               </Button>
               <Button
                 className="w-full"
+                disabled={!seedDownloaded}
                 onClick={() => {
                   const ledger = seedBackupModal.ledger;
                   setSeedBackupModal(null);
                   toast.success(
-                    `Registered as Ledger ${ledger} — now set your PIN`,
+                    `Registered as Ledger ${ledger} — now set your PIN on the device`,
                   );
                 }}
               >
-                I&apos;ve Written It Down
+                {seedDownloaded
+                  ? "I've Saved It — Continue"
+                  : "Download first to continue"}
               </Button>
             </div>
           </div>
@@ -1108,21 +1129,20 @@ export default function HomePage() {
       {/* ── Seed Phrase Recovery Modal ────────────────────────────────── */}
       {recoverModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="bg-background/80 fixed inset-0 backdrop-blur-sm"
-            onClick={() => {
-              setRecoverModal(null);
-              setRecoverPhraseInput("");
-            }}
-          />
+          {/* Non-interactive backdrop — clicking it does nothing */}
+          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
           <div className="bg-popover relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-foreground/10">
             <div className="flex flex-col gap-1">
-              <h2 className="font-heading text-base font-medium leading-none">
-                Enter Seed Phrase
-              </h2>
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="text-destructive size-4 shrink-0" />
+                <h2 className="font-heading text-base font-medium leading-none">
+                  Recovery Mode — Device Wiped
+                </h2>
+              </div>
               <p className="text-muted-foreground text-sm">
-                Enter the 12 words you saved when you registered Ledger{" "}
-                {recoverModal.ledger}, separated by spaces.
+                Ledger {recoverModal.ledger} was wiped after 3 wrong PIN
+                attempts. Enter all 12 seed words in order to unlock the
+                device. This modal cannot be dismissed.
               </p>
             </div>
 
@@ -1134,28 +1154,16 @@ export default function HomePage() {
               className="font-mono text-sm"
             />
 
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => {
-                  setRecoverModal(null);
-                  setRecoverPhraseInput("");
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="w-full"
-                disabled={
-                  verifyingPhrase ||
-                  recoverPhraseInput.trim().split(/\s+/).length !== 12
-                }
-                onClick={confirmRecover}
-              >
-                {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
-              </Button>
-            </div>
+            <Button
+              className="w-full"
+              disabled={
+                verifyingPhrase ||
+                recoverPhraseInput.trim().split(/\s+/).length !== 12
+              }
+              onClick={confirmRecover}
+            >
+              {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
+            </Button>
           </div>
         </div>
       )}
