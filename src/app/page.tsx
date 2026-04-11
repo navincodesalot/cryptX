@@ -222,24 +222,34 @@ class DeviceConnection {
   }
 }
 
-/** Arduino sends SEED_BEGIN → 12× SEED_IDX:n → SEED_END after SETID (indices 0–2047). */
-async function collectSeedWordsFromDevice(
-  device: DeviceConnection,
-): Promise<string[]> {
-  await device.waitFor((l) => l === "SEED_BEGIN", 12_000);
-  const words: string[] = [];
-  for (let i = 0; i < 12; i++) {
-    const line = await device.waitFor((l) => l.startsWith("SEED_IDX:"), 6000);
+/**
+ * Parses buffered serial lines from the firmware (between SEED_BEGIN and SEED_END).
+ * Must not use waitFor() for SEED_IDX lines — they can arrive in the same USB chunk
+ * before any microtask runs, so those lines would be dropped.
+ */
+function parseSeedLinesToWords(buffer: string[]): string[] {
+  const start = buffer.indexOf("SEED_BEGIN");
+  const end = buffer.indexOf("SEED_END");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("Device did not send SEED_BEGIN … SEED_END");
+  }
+  const idxLines = buffer
+    .slice(start + 1, end)
+    .filter((l) => l.startsWith("SEED_IDX:"));
+  if (idxLines.length !== 12) {
+    throw new Error(
+      `Expected 12 SEED_IDX lines, got ${idxLines.length} — check firmware`,
+    );
+  }
+  return idxLines.map((line) => {
     const n = Number.parseInt(line.slice(9), 10);
     if (Number.isNaN(n) || n < 0 || n > 2047) {
-      throw new Error("Invalid SEED_IDX");
+      throw new Error("Invalid SEED_IDX from device");
     }
     const w = BIP39_ENGLISH[n];
-    if (w === undefined) throw new Error("Invalid SEED_IDX");
-    words.push(w);
-  }
-  await device.waitFor((l) => l === "SEED_END", 6000);
-  return words;
+    if (w === undefined) throw new Error("Invalid SEED_IDX from device");
+    return w;
+  });
 }
 
 function processSerialLine(
@@ -569,14 +579,50 @@ export default function HomePage() {
     const device =
       ledger === "A" ? deviceARef.current : deviceBRef.current;
     if (!device) return;
+
+    const prevOnLine = device.onLine;
+    const buf: string[] = [];
+    let finished = false;
+    let resolveDone!: () => void;
+    let rejectDone!: (e: Error) => void;
+    const doneP = new Promise<void>((res, rej) => {
+      resolveDone = res;
+      rejectDone = rej;
+    });
+    const timeout = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        device.onLine = prevOnLine;
+        rejectDone(new Error("Timed out waiting for SEED_END from device"));
+      }
+    }, 25_000);
+
+    device.onLine = (line: string) => {
+      prevOnLine?.(line);
+      buf.push(line);
+      if (line === "SEED_END" && !finished) {
+        finished = true;
+        clearTimeout(timeout);
+        device.onLine = prevOnLine;
+        resolveDone();
+      }
+    };
+
     try {
       await device.send(`SETID ${ledger}`);
-      await device.waitFor((l) => l === "ID_SAVED", 5000);
-      const words = await collectSeedWordsFromDevice(device);
+      await doneP;
+      const words = parseSeedLinesToWords(buf);
       setSeedBackupModal({ ledger, words });
-    } catch {
+    } catch (e) {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timeout);
+        device.onLine = prevOnLine;
+      }
       toast.error(
-        "Registration or seed transfer failed — check USB serial connection",
+        e instanceof Error
+          ? e.message
+          : "Registration or seed transfer failed — check USB & firmware",
       );
     }
   };
