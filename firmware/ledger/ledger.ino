@@ -21,10 +21,9 @@
  *
  * PIN INPUT
  * ─────────
- *   Button 1 = digit "1",  Button 2 = digit "2" (one press each, rising edge)
- *   If both buttons are down together: ignore (no digit) until both released
- *   6 digits — the 6th digit auto-submits (no "enter" gesture)
- *   After each digit you must release all buttons before the next counts
+ *   Digit 1 / 2 is registered on BUTTON RELEASE after a solo press (not on press-edge)
+ *   If both buttons are ever down together → ignore until both are released
+ *   6 digits → auto-submit.
  *
  * SERIAL PROTOCOL  (115200 baud, newline-terminated)
  * ────────────────────────────────────────────────────
@@ -400,54 +399,48 @@ void printState() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Returns: 0 = nothing, 1 = digit 1, 2 = digit 2
+// Release-to-fire: count digit when you *release* a solo button (not on press).
+// Chord: both down together → ignore until both are up (arms cleared).
 uint8_t readButtons() {
-  static bool prev1     = false;
-  static bool prev2     = false;
-  static bool bothLatch = false;
-  static bool rearmed   = true;  // false = wait for all-up after a digit
+  static bool prevP1 = false;
+  static bool prevP2 = false;
+  static bool chord  = false;
+  static bool arm1   = false;
+  static bool arm2   = false;
 
-  bool p1 = (digitalRead(PIN_BTN1) == LOW);
-  bool p2 = (digitalRead(PIN_BTN2) == LOW);
+  bool p1 = (digitalRead(PIN_BTN1) == HIGH);
+  bool p2 = (digitalRead(PIN_BTN2) == HIGH);
 
-  // Both down together: ignore until both released (no digits)
   if (p1 && p2) {
-    bothLatch = true;
-    prev1 = true;
-    prev2 = true;
+    chord = true;
+    arm1 = arm2 = false;
+    prevP1 = p1;
+    prevP2 = p2;
     return 0;
   }
 
-  if (bothLatch) {
-    if (!p1 && !p2) {
-      bothLatch = false;
-      prev1 = false;
-      prev2 = false;
-      rearmed = true;
-    }
-    return 0;
-  }
-
-  // After a digit: require full release before another counts
-  if (!rearmed) {
-    if (!p1 && !p2) {
-      rearmed = true;
-      prev1 = false;
-      prev2 = false;
-    } else {
-      prev1 = p1;
-      prev2 = p2;
-    }
+  if (chord) {
+    if (!p1 && !p2) chord = false;
+    prevP1 = p1;
+    prevP2 = p2;
     return 0;
   }
 
   uint8_t out = 0;
-  if (p1 && !p2 && !prev1) out = 1;
-  else if (p2 && !p1 && !prev2) out = 2;
 
-  if (out != 0) rearmed = false;
+  if (p1 && !p2 && !prevP1) arm1 = true;
+  if (!p1 && p2 && !prevP2) arm2 = true;
 
-  prev1 = p1;
-  prev2 = p2;
+  if (!p1 && prevP1 && arm1 && !p2) {
+    out = 1;
+    arm1 = false;
+  } else if (!p2 && prevP2 && arm2 && !p1) {
+    out = 2;
+    arm2 = false;
+  }
+
+  prevP1 = p1;
+  prevP2 = p2;
   return out;
 }
 

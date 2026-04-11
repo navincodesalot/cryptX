@@ -93,13 +93,25 @@ function shortAddr(addr: string) {
   return addr ? `${addr.slice(0, 5)}…${addr.slice(-4)}` : "—";
 }
 
-function formatTime(blockTime: number | null) {
-  if (!blockTime) return "—";
-  return new Date(blockTime * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+/** Renders chain time in the viewer's local timezone (avoids UTC from SSR). */
+function LocalTxTime({ blockTime }: { blockTime: number | null }) {
+  const [label, setLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (blockTime == null) {
+      setLabel("—");
+      return;
+    }
+    const d = new Date(blockTime * 1000);
+    setLabel(
+      d.toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "medium",
+      }),
+    );
+  }, [blockTime]);
+
+  return <span suppressHydrationWarning>{label ?? "—"}</span>;
 }
 
 /* ─── Managed serial connection ──────────────────────────────────────────── */
@@ -745,7 +757,7 @@ export default function HomePage() {
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-xs tabular-nums">
-                        {formatTime(tx.blockTime)}
+                        <LocalTxTime blockTime={tx.blockTime} />
                       </TableCell>
                       <TableCell className="font-mono text-xs">
                         <AddressLabel
@@ -949,9 +961,10 @@ function LedgerCard({
                   : "Confirm PIN"}
               </p>
               <p className="text-muted-foreground text-xs">
-                Short press: button 1 = digit 1, button 2 = digit 2 (six
-                digits, then it submits). Release between presses. Pressing
-                both buttons together does nothing.
+                Press and release one button at a time: btn 1 = digit 1, btn
+                2 = digit 2. The digit is counted on release. Six digits
+                submit automatically. If both buttons are pressed together,
+                nothing is counted until both are released.
               </p>
               <PinDots filled={hwState.pinProgress} />
             </div>
