@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   CircleDashed,
   Cpu,
+  Download,
   Droplets,
   ExternalLink,
   KeyRound,
@@ -28,6 +29,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import {
   Table,
@@ -37,6 +46,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 const HARDWARE_MODE =
   process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
@@ -285,7 +295,8 @@ function processSerialLine(
       signExpiresAt: null,
     }));
   } else if (line.startsWith("SIGN_CANCEL:")) {
-    const n = parseInt(line.slice(11), 10);
+    // "SIGN_CANCEL:" is 12 chars; digit(s) start at index 12 (slice(11) was ":5" → NaN)
+    const n = Number.parseInt(line.slice(12).trim(), 10);
     if (n >= 1 && n <= 5) {
       setState((p) => ({ ...p, signCancelHold: n }));
     }
@@ -377,6 +388,16 @@ export default function HomePage() {
 
   const [hwStateA, setHwStateA] = useState<HwState>(INITIAL_HW);
   const [hwStateB, setHwStateB] = useState<HwState>(INITIAL_HW);
+
+  const [seedBackupModal, setSeedBackupModal] = useState<{
+    ledger: "A" | "B";
+    words: string[];
+  } | null>(null);
+  const [recoverModal, setRecoverModal] = useState<{
+    ledger: "A" | "B";
+  } | null>(null);
+  const [recoverPhraseInput, setRecoverPhraseInput] = useState("");
+  const [verifyingPhrase, setVerifyingPhrase] = useState(false);
 
   const deviceARef = useRef<DeviceConnection | null>(null);
   const deviceBRef = useRef<DeviceConnection | null>(null);
@@ -533,27 +554,71 @@ export default function HomePage() {
     if (!device) return;
     try {
       await device.send(`SETID ${ledger}`);
-      toast.success(`Registered as Ledger ${ledger} — now set your PIN`);
+
+      const res = await fetch("/api/seed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "generate", wallet: ledger }),
+      });
+      const data = (await res.json()) as { words?: string[]; error?: string };
+      if (!res.ok || !data.words) {
+        toast.error(data.error ?? "Failed to generate seed phrase");
+        return;
+      }
+      setSeedBackupModal({ ledger, words: data.words });
     } catch {
       toast.error("Failed to register device");
     }
   };
 
   /* ── Recover ───────────────────────────────────────────────────────────── */
-  const recoverDevice = async (ledger: "A" | "B") => {
-    const device =
-      ledger === "A" ? deviceARef.current : deviceBRef.current;
-    if (!device) return;
+  const recoverDevice = (ledger: "A" | "B") => {
+    setRecoverPhraseInput("");
+    setRecoverModal({ ledger });
+  };
+
+  const confirmRecover = async () => {
+    if (!recoverModal) return;
+    const { ledger } = recoverModal;
+    setVerifyingPhrase(true);
     try {
+      const res = await fetch("/api/seed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "verify",
+          wallet: ledger,
+          phrase: recoverPhraseInput.trim(),
+        }),
+      });
+      const data = (await res.json()) as { valid?: boolean; error?: string };
+      if (!res.ok) {
+        toast.error(data.error ?? "Verification failed");
+        return;
+      }
+      if (!data.valid) {
+        toast.error("Incorrect seed phrase — try again");
+        return;
+      }
+
+      const device =
+        ledger === "A" ? deviceARef.current : deviceBRef.current;
+      if (!device) {
+        toast.error(`Ledger ${ledger} is not connected`);
+        return;
+      }
       await device.send("RECOVER");
       await device
         .waitFor((l) => l === "RECOVERED", 3000)
         .catch(() => null);
+      setRecoverModal(null);
       toast.success(
         `Ledger ${ledger} recovered — go through setup again`,
       );
     } catch {
       toast.error("Recovery failed");
+    } finally {
+      setVerifyingPhrase(false);
     }
   };
 
@@ -892,6 +957,135 @@ export default function HomePage() {
           )}
         </section>
       </div>
+
+      {/* ── Seed Phrase Backup Modal ─────────────────────────────────── */}
+      <Dialog
+        open={seedBackupModal !== null}
+        onOpenChange={() => {}}
+      >
+        <DialogContent className="sm:max-w-lg" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Backup Your Seed Phrase</DialogTitle>
+            <DialogDescription>
+              Write these 12 words down in order. You will need them to
+              recover your wallet. Never share them with anyone.
+            </DialogDescription>
+          </DialogHeader>
+
+          {seedBackupModal && (
+            <div className="grid grid-cols-3 gap-2 py-4">
+              {seedBackupModal.words.map((word, i) => (
+                <div
+                  key={i}
+                  className="bg-muted flex items-center gap-2 rounded-md px-3 py-2"
+                >
+                  <span className="text-muted-foreground w-5 text-right font-mono text-xs">
+                    {i + 1}.
+                  </span>
+                  <span className="font-mono text-sm font-medium">
+                    {word}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="bg-amber-500/10 flex items-start gap-2 rounded-lg p-3">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+            <p className="text-xs text-amber-500">
+              This is the only time your seed phrase will be shown. Store it
+              securely — you cannot view it again.
+            </p>
+          </div>
+
+          <DialogFooter className="flex-col gap-2 sm:flex-col">
+            {seedBackupModal && (
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  const content = seedBackupModal.words
+                    .map((w, i) => `${i + 1}. ${w}`)
+                    .join("\n");
+                  const blob = new Blob([content], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `ledger-${seedBackupModal.ledger}-seed.txt`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <Download className="mr-2 size-4" />
+                Download as .txt
+              </Button>
+            )}
+            <Button
+              className="w-full"
+              onClick={() => {
+                setSeedBackupModal(null);
+                toast.success(
+                  `Registered as Ledger ${seedBackupModal?.ledger} — now set your PIN`,
+                );
+              }}
+            >
+              I&apos;ve Written It Down
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Seed Phrase Recovery Modal ────────────────────────────────── */}
+      <Dialog
+        open={recoverModal !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRecoverModal(null);
+            setRecoverPhraseInput("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Enter Seed Phrase</DialogTitle>
+            <DialogDescription>
+              Enter the 12 words you saved when you registered Ledger{" "}
+              {recoverModal?.ledger}, separated by spaces.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Textarea
+            placeholder="word1 word2 word3 …"
+            rows={4}
+            value={recoverPhraseInput}
+            onChange={(e) => setRecoverPhraseInput(e.target.value)}
+            className="font-mono text-sm"
+          />
+
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setRecoverModal(null);
+                setRecoverPhraseInput("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="w-full"
+              disabled={
+                verifyingPhrase ||
+                recoverPhraseInput.trim().split(/\s+/).length !== 12
+              }
+              onClick={confirmRecover}
+            >
+              {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
