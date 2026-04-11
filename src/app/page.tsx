@@ -391,7 +391,6 @@ export default function HomePage() {
     words: string[];
   } | null>(null);
   const [seedDownloaded, setSeedDownloaded] = useState(false);
-  const [sendingAck, setSendingAck] = useState(false);
   const [recoverModal, setRecoverModal] = useState<{
     ledger: "A" | "B";
   } | null>(null);
@@ -526,14 +525,13 @@ export default function HomePage() {
         }
       }
 
-      // Enforce A/B match in hardware mode — skip for INIT/WIPED/SEED_BACKUP where ID may not yet be set
+      // Enforce A/B match in hardware mode — skip for INIT/WIPED where ID may not yet be set
       if (
         HARDWARE_MODE &&
         detectedId !== "?" &&
         detectedId !== ledger &&
         mode !== "INIT" &&
-        mode !== "WIPED" &&
-        mode !== "SEED_BACKUP"
+        mode !== "WIPED"
       ) {
         await device.close();
         toast.error(
@@ -621,26 +619,14 @@ export default function HomePage() {
     }
   };
 
-  /* ── Confirm seed backup → send SEED_ACK to device ─────────────────────── */
-  const confirmSeedBackup = async () => {
+  /* ── Confirm seed backup ──────────────────────────────────────────────── */
+  const confirmSeedBackup = () => {
     if (!seedBackupModal) return;
     const { ledger } = seedBackupModal;
-    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
-    setSendingAck(true);
-    try {
-      if (device) {
-        await device.send("SEED_ACK");
-        // Device will emit SEED_ACKED then transition to STATE:SET_PIN — handled by onLine
-      }
-      setSeedBackupModal(null);
-      toast.success(
-        `Ledger ${ledger} seed saved — now set your PIN on the device`,
-      );
-    } catch {
-      toast.error("Failed to send acknowledgement to device");
-    } finally {
-      setSendingAck(false);
-    }
+    setSeedBackupModal(null);
+    toast.success(
+      `Ledger ${ledger} seed saved — now set your PIN on the device`,
+    );
   };
 
   /* ── Recover ───────────────────────────────────────────────────────────── */
@@ -691,14 +677,44 @@ export default function HomePage() {
           return;
         }
       }
+      const prevOnLine = device.onLine;
+      const buf: string[] = [];
+      let recoverDone = false;
+      let resolveRecover!: () => void;
+      let rejectRecover!: (e: Error) => void;
+      const recoverP = new Promise<void>((res, rej) => {
+        resolveRecover = res;
+        rejectRecover = rej;
+      });
+      const recoverTimeout = setTimeout(() => {
+        if (!recoverDone) {
+          recoverDone = true;
+          device.onLine = prevOnLine;
+          rejectRecover(new Error("Timed out waiting for RECOVERED"));
+        }
+      }, 15_000);
+
+      device.onLine = (line: string) => {
+        prevOnLine?.(line);
+        buf.push(line);
+        if (line === "RECOVERED" && !recoverDone) {
+          recoverDone = true;
+          clearTimeout(recoverTimeout);
+          device.onLine = prevOnLine;
+          resolveRecover();
+        }
+      };
+
       await device.send("RECOVER");
-      await device
-        .waitFor((l) => l === "RECOVERED", 5000)
-        .catch(() => null);
+      await recoverP;
+
+      const words = parseSeedLinesToWords(buf);
       setRecoverModal(null);
       setRecoverPhraseInput("");
+      setSeedDownloaded(false);
+      setSeedBackupModal({ ledger, words });
       toast.success(
-        `Ledger ${ledger} recovered — go through setup again`,
+        `Ledger ${ledger} recovered — save your new seed phrase`,
       );
     } catch {
       toast.error("Recovery failed — check device is in WIPED mode");
@@ -1089,9 +1105,7 @@ export default function HomePage() {
                 variant="outline"
                 className="w-full"
                 onClick={() => {
-                  const content = seedBackupModal.words
-                    .map((w, i) => `${i + 1}. ${w}`)
-                    .join("\n");
+                  const content = seedBackupModal.words.join(" ");
                   const blob = new Blob([content], { type: "text/plain" });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
@@ -1107,14 +1121,12 @@ export default function HomePage() {
               </Button>
               <Button
                 className="w-full"
-                disabled={!seedDownloaded || sendingAck}
+                disabled={!seedDownloaded}
                 onClick={confirmSeedBackup}
               >
-                {sendingAck
-                  ? "Confirming…"
-                  : seedDownloaded
-                    ? "I've Saved It — Continue"
-                    : "Download first to continue"}
+                {seedDownloaded
+                  ? "I've Saved It — Continue"
+                  : "Download first to continue"}
               </Button>
             </div>
           </div>
@@ -1214,7 +1226,6 @@ function LedgerCard({
 
   const isSetup =
     hwState.mode === "INIT" ||
-    hwState.mode === "SEED_BACKUP" ||
     hwState.mode === "SET_PIN" ||
     hwState.mode === "CONFIRM_PIN";
   const isWiped = hwState.mode === "WIPED";
@@ -1301,24 +1312,6 @@ function LedgerCard({
               onClick={onRegister}
             >
               Register as Ledger {index}
-            </Button>
-          </div>
-        )}
-
-        {showSetupFlow && hwState.mode === "SEED_BACKUP" && (
-          <div className="bg-muted/50 space-y-3 rounded-lg p-4">
-            <p className="text-sm font-medium">Seed Phrase Backup</p>
-            <p className="text-muted-foreground text-xs">
-              The device is waiting for you to save your seed phrase. If the
-              panel didn&apos;t open, click below to re-send.
-            </p>
-            <Button
-              size="sm"
-              className="w-full"
-              onClick={onRegister}
-              disabled={busy}
-            >
-              Re-send Seed Phrase
             </Button>
           </div>
         )}

@@ -22,7 +22,6 @@
  * STATE MACHINE
  * ─────────────
  *   INIT        → Awaiting SETID from host
- *   SEED_BACKUP → Seed generated & sent; waiting for host SEED_ACK before PIN setup
  *   SET_PIN     → User creates 6-digit PIN via buttons
  *   CONFIRM_PIN → User re-enters PIN to confirm
  *   READY       → Idle, waiting for SIGN commands
@@ -42,11 +41,10 @@
  *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
  *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
  *   FACTORY_RESET   → FACTORY_OK — full EEPROM wipe, salt rotate, ID=A, MODE_INIT
- *   SEED_ACK        → SEED_ACKED (MODE_SEED_BACKUP only) then enters SET_PIN
  *   MODE <n>        → mode switch (with guards)
  *   SIGN            → PENDING (then PIN entry on device)
  *   CANCEL          → READY  (same as holding both buttons 5s while SIGNING)
- *   RECOVER         → clears EEPROM, restarts at INIT (requires prior SEED_OK)
+ *   RECOVER         → wipes + generates new seed + enters SET_PIN (requires prior SEED_OK)
  *   SEED_VERIFY     → start 12-word index check (MODE_WIPED only)
  *   SVI <0-2047>    → submit one expected word index (after SEED_VERIFY); 12th match → SEED_OK
  *   CHALLENGE       → NONCE:<8 hex bytes>
@@ -93,6 +91,7 @@
  *   0x18  1B  AUTH fail counter
  *   0x19  1B  Seed set flag    (0xAA = 12 word indices stored) — plaintext
  *   0x1A  24B 12× uint16 LE BIP39 word indices (0–2047) — plaintext (survives PIN wipe)
+ *   0x32  1B  Wiped flag       (0xBB = PIN-fail wiped) — plaintext (survives salt rotation)
  *
  * SECRET KEY
  * ──────────
@@ -108,8 +107,6 @@
 
 rgb_lcd lcd;
 
-// ── User configuration ────────────────────────────────────────────────────────
-#define DEFAULT_ID 'A'
 
 // ── EEPROM addresses ─────────────────────────────────────────────────────────
 #define ADDR_DEV_STATE       0x00
@@ -126,10 +123,12 @@ rgb_lcd lcd;
 #define ADDR_AUTH_FAILS      0x18
 #define ADDR_SEED_FLAG       0x19
 #define ADDR_SEED_IDX0       0x1A   // 12 × uint16 LE → …0x31
+#define ADDR_WIPED_FLAG      0x32   // plaintext — survives salt rotation; 0xBB = wiped
 
 #define MAGIC_BYTE           0xCC
 #define SEED_SET_FLAG        0xAA
 #define PIN_SET_FLAG         0xAA
+#define WIPED_FLAG_VAL       0xBB
 #define DEV_STATE_UNINIT     0
 #define DEV_STATE_REGISTERED 1
 #define DEV_STATE_PIN_SET    2
@@ -154,8 +153,7 @@ enum Mode {
   MODE_CONFIRM_PIN,  // 2
   MODE_READY,        // 3
   MODE_SIGNING,      // 4
-  MODE_WIPED,        // 5
-  MODE_SEED_BACKUP   // 6 — seed generated, waiting for host SEED_ACK before allowing PIN setup
+  MODE_WIPED         // 5
 };
 
 Mode          currentMode    = MODE_INIT;
@@ -357,6 +355,7 @@ bool isPlainAddr(uint8_t addr) {
   if (addr >= ADDR_SALT_START && addr <= ADDR_SALT_END) return true;
   if (addr == ADDR_SEED_FLAG) return true;
   if (addr >= ADDR_SEED_IDX0 && addr <= ADDR_SEED_IDX0 + 23) return true;
+  if (addr == ADDR_WIPED_FLAG) return true;
   return false;
 }
 
@@ -460,6 +459,7 @@ void wipeEEPROM() {
   eepromWrite16(ADDR_REJECT_COUNT, 0);
   eepromWrite(ADDR_CONSEC_REJECTS, 0);
   eepromWrite(ADDR_AUTH_FAILS, 0);
+  EEPROM.write(ADDR_WIPED_FLAG, 0x00);
   clearSeedPlain();
 }
 
@@ -521,6 +521,7 @@ static void pinFailWipePreserveSeed() {
 
   // Mark as needing recovery — persists across power cycles so reconnect goes straight to WIPED
   eepromWrite(ADDR_DEV_STATE, DEV_STATE_WIPED);
+  EEPROM.write(ADDR_WIPED_FLAG, WIPED_FLAG_VAL);
 }
 
 void initEEPROM() {
@@ -602,7 +603,7 @@ void recordAuthFail() {
   eepromWrite(ADDR_AUTH_FAILS, f);
   if (f >= MAX_AUTH_FAILS) {
     wipeEEPROM();
-    deviceId = DEFAULT_ID;
+    deviceId = '?';
     readDeviceSignature(gChipSig);
     uint8_t s[8];
     readSaltPlain(s);
@@ -653,7 +654,6 @@ const char* modeName(Mode m) {
     case MODE_READY:       return "READY";
     case MODE_SIGNING:     return "SIGNING";
     case MODE_WIPED:       return "WIPED";
-    case MODE_SEED_BACKUP: return "SEED_BACKUP";
     default:               return "UNKNOWN";
   }
 }
@@ -702,11 +702,6 @@ void enterMode(Mode m) {
     case MODE_WIPED:
       lcd.setRGB(255, 255, 255);
       lcdShow("!! WIPED !!", "Recover via app");
-      break;
-
-    case MODE_SEED_BACKUP:
-      lcd.setRGB(255, 255, 255);
-      lcdShow("Backup phrase", "Check the UI!");
       break;
   }
 }
@@ -1010,13 +1005,13 @@ void handleCmd(const String& cmdIn) {
     }
     printSeedToSerial();
 
-    if (currentMode == MODE_INIT || currentMode == MODE_SEED_BACKUP) {
+    if (currentMode == MODE_INIT) {
       char msg[17];
       snprintf(msg, sizeof(msg), "Ledger %c", deviceId);
       lcd.setRGB(255, 255, 255);
       lcdShow(msg, "Registered!");
       delay(1500);
-      enterMode(MODE_SEED_BACKUP);
+      enterMode(MODE_SET_PIN);
     }
 
   } else if (cmd.startsWith("MODE ")) {
@@ -1064,14 +1059,6 @@ void handleCmd(const String& cmdIn) {
     } else {
       Serial.println("READY");
     }
-
-  } else if (cmd == "SEED_ACK") {
-    if (currentMode != MODE_SEED_BACKUP) {
-      Serial.println("ERR:NOT_BACKUP");
-      return;
-    }
-    Serial.println("SEED_ACKED");
-    enterMode(MODE_SET_PIN);
 
   } else if (cmd == "SEED_VERIFY") {
     if (currentMode != MODE_WIPED) {
@@ -1123,14 +1110,25 @@ void handleCmd(const String& cmdIn) {
     recoverSeedOk = false;
     sviActive     = false;
     sviCount      = 0;
+
+    char savedId = deviceId;
     wipeEEPROM();
-    deviceId = DEFAULT_ID;
+
+    if (savedId >= 'A' && savedId <= 'Z') {
+      deviceId = savedId;
+      EEPROM.write(ADDR_DEVICE_ID, (uint8_t)savedId);
+      eepromWrite(ADDR_DEV_STATE, DEV_STATE_REGISTERED);
+    }
+
     readDeviceSignature(gChipSig);
     readSaltPlain(salt);
     deriveStorageKeysFromSigSalt(gChipSig, salt);
     rebuildAuthKey(gChipSig, salt, deviceId);
+
+    generateAndStoreSeed();
+    printSeedToSerial();
     Serial.println("RECOVERED");
-    enterMode(MODE_INIT);
+    enterMode(MODE_SET_PIN);
 
   } else if (cmd == "CHALLENGE") {
     generateNonce(currentNonce);
@@ -1168,14 +1166,25 @@ void handleCmd(const String& cmdIn) {
       recoverSeedOk = false;
       sviActive     = false;
       sviCount      = 0;
+
+      char savedId = deviceId;
       wipeEEPROM();
-      deviceId = DEFAULT_ID;
+
+      if (savedId >= 'A' && savedId <= 'Z') {
+        deviceId = savedId;
+        EEPROM.write(ADDR_DEVICE_ID, (uint8_t)savedId);
+        eepromWrite(ADDR_DEV_STATE, DEV_STATE_REGISTERED);
+      }
+
       readDeviceSignature(gChipSig);
       readSaltPlain(salt);
       deriveStorageKeysFromSigSalt(gChipSig, salt);
       rebuildAuthKey(gChipSig, salt, deviceId);
+
+      generateAndStoreSeed();
+      printSeedToSerial();
       Serial.println("UNLOCKED");
-      enterMode(MODE_INIT);
+      enterMode(MODE_SET_PIN);
     } else {
       eepromWrite(ADDR_CONSEC_REJECTS, 0);
       clearAuthFails();
@@ -1185,7 +1194,7 @@ void handleCmd(const String& cmdIn) {
 
   } else if (cmd == "FACTORY_RESET") {
     wipeEEPROM();
-    deviceId = DEFAULT_ID;
+    deviceId = '?';
     readDeviceSignature(gChipSig);
     readSaltPlain(salt);
     deriveStorageKeysFromSigSalt(gChipSig, salt);
@@ -1239,14 +1248,12 @@ void setup() {
 
   uint8_t devState = eepromRead(ADDR_DEV_STATE);
 
-  if (devState == DEV_STATE_WIPED) {
-    // PIN-fail wipe — go straight to recovery, never expose seed again
+  if (EEPROM.read(ADDR_WIPED_FLAG) == WIPED_FLAG_VAL || devState == DEV_STATE_WIPED) {
     enterMode(MODE_WIPED);
   } else if (devState >= DEV_STATE_PIN_SET && isPinSet()) {
     enterMode(MODE_READY);
   } else if (devState >= DEV_STATE_REGISTERED) {
-    // Registered but PIN not yet set — seed must be acked via UI before PIN setup
-    enterMode(MODE_SEED_BACKUP);
+    enterMode(MODE_SET_PIN);
   } else {
     enterMode(MODE_INIT);
   }
