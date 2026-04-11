@@ -126,15 +126,17 @@ async function openSerialPort(): Promise<{ port: SerialPort; deviceId: string }>
 }
 
 /**
- * Sends SIGN to the device and waits up to 30 s for CONFIRMED or REJECTED.
- * Returns true on confirmation, false otherwise.
+ * Sends SIGN to the device and waits up to 30 s for CONFIRMED, REJECTED, or LOCKED.
+ * Returns "confirmed" | "rejected" | "locked" | "timeout"
  */
-async function requestDeviceConfirmation(port: SerialPort): Promise<boolean> {
+async function requestDeviceConfirmation(
+  port: SerialPort,
+): Promise<"confirmed" | "rejected" | "locked" | "timeout"> {
   const writer = port.writable!.getWriter();
   const reader = port.readable!.getReader();
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  let confirmed = false;
+  let result: "confirmed" | "rejected" | "locked" | "timeout" = "timeout";
 
   const cancelTimer = setTimeout(
     () => reader.cancel("sign timeout").catch(() => undefined),
@@ -149,12 +151,12 @@ async function requestDeviceConfirmation(port: SerialPort): Promise<boolean> {
       const { value, done } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      if (buf.includes("CONFIRMED")) { confirmed = true; break; }
-      if (buf.includes("REJECTED")) break;
+      if (buf.includes("CONFIRMED")) { result = "confirmed"; break; }
+      if (buf.includes("LOCKED"))    { result = "locked";    break; }
+      if (buf.includes("REJECTED"))  { result = "rejected";  break; }
     }
 
-    if (!confirmed) {
-      // Tell device to return to idle
+    if (result !== "confirmed") {
       await writer.write(enc.encode("CANCEL\n")).catch(() => undefined);
     }
   } catch {
@@ -166,7 +168,7 @@ async function requestDeviceConfirmation(port: SerialPort): Promise<boolean> {
     try { reader.releaseLock(); } catch { /* already released */ }
   }
 
-  return confirmed;
+  return result;
 }
 
 /* ─── Page ───────────────────────────────────────────────────────────────── */
@@ -296,12 +298,16 @@ export default function HomePage() {
         setAwaitingHw(from);
         toast.loading(`Waiting for Ledger ${from} hardware…`, { id: "hw-confirm" });
 
-        const confirmed = await requestDeviceConfirmation(port);
+        const result = await requestDeviceConfirmation(port);
 
         setAwaitingHw(null);
         toast.dismiss("hw-confirm");
 
-        if (!confirmed) {
+        if (result === "locked") {
+          toast.error(`Ledger ${from} is locked after too many rejections. Power-cycle and send UNLOCK via the bridge.`);
+          return;
+        }
+        if (result !== "confirmed") {
           toast.error(`Ledger ${from} hardware rejected or timed out`);
           return;
         }
