@@ -674,13 +674,23 @@ void enterMode(Mode m) {
 
     case MODE_SET_PIN:
       lcd.setRGB(255, 255, 255);
-      lcdShowPinProgress("Create PIN:", 0);
+      {
+        char hdr[17];
+        if (deviceId != '?') snprintf(hdr, sizeof(hdr), "%c: Create PIN", deviceId);
+        else                 snprintf(hdr, sizeof(hdr), "Create PIN:");
+        lcdShowPinProgress(hdr, 0);
+      }
       Serial.println("PIN_PROGRESS:0");
       break;
 
     case MODE_CONFIRM_PIN:
       lcd.setRGB(255, 255, 255);
-      lcdShowPinProgress("Confirm PIN:", 0);
+      {
+        char hdr[17];
+        if (deviceId != '?') snprintf(hdr, sizeof(hdr), "%c: Confirm PIN", deviceId);
+        else                 snprintf(hdr, sizeof(hdr), "Confirm PIN:");
+        lcdShowPinProgress(hdr, 0);
+      }
       Serial.println("PIN_PROGRESS:0");
       break;
 
@@ -915,10 +925,16 @@ void handlePinButton(uint8_t btn) {
   Serial.print("PIN_PROGRESS:");
   Serial.println(pinPos);
 
-  const char* header;
-  if (currentMode == MODE_SET_PIN) header = "Create PIN:";
-  else if (currentMode == MODE_CONFIRM_PIN) header = "Confirm PIN:";
-  else header = "Sign: Enter PIN";
+  char header[17];
+  if (currentMode == MODE_SET_PIN) {
+    if (deviceId != '?') snprintf(header, sizeof(header), "%c: Create PIN", deviceId);
+    else                 snprintf(header, sizeof(header), "Create PIN:");
+  } else if (currentMode == MODE_CONFIRM_PIN) {
+    if (deviceId != '?') snprintf(header, sizeof(header), "%c: Confirm PIN", deviceId);
+    else                 snprintf(header, sizeof(header), "Confirm PIN:");
+  } else {
+    snprintf(header, sizeof(header), "Sign: Enter PIN");
+  }
 
   lcdShowPinProgress(header, pinPos);
 

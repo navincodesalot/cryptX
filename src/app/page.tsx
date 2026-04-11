@@ -622,6 +622,10 @@ export default function HomePage() {
   /* ── Confirm seed backup → send SEED_ACK so device enters PIN setup ──── */
   const confirmSeedBackup = async () => {
     if (!seedBackupModal) return;
+    if (!seedDownloaded) {
+      toast.error("Download the seed phrase as .txt before continuing");
+      return;
+    }
     const { ledger } = seedBackupModal;
     const device =
       ledger === "A" ? deviceARef.current : deviceBRef.current;
@@ -1105,12 +1109,14 @@ export default function HomePage() {
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
               <p className="text-xs text-amber-500">
                 This is the only time your seed phrase will be shown. Store it
-                securely — you cannot view it again.
+                securely — you cannot view it again. The device will not move
+                to PIN setup until you download the .txt file below.
               </p>
             </div>
 
             <div className="flex flex-col gap-2">
               <Button
+                type="button"
                 variant="outline"
                 className="w-full"
                 onClick={() => {
@@ -1129,6 +1135,7 @@ export default function HomePage() {
                 Download as .txt
               </Button>
               <Button
+                type="button"
                 className="w-full"
                 disabled={!seedDownloaded}
                 onClick={confirmSeedBackup}
