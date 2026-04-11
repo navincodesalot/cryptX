@@ -1,0 +1,105 @@
+import { NextResponse } from "next/server";
+import {
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  type ParsedTransactionWithMeta,
+} from "@solana/web3.js";
+import { getConnection } from "@/lib/solana";
+
+export interface TxRecord {
+  signature: string;
+  slot: number;
+  blockTime: number | null;
+  status: "success" | "failed";
+  from: string;
+  to: string;
+  amount: number;
+  fee: number;
+}
+
+async function getHistory(pubkey: PublicKey, limit = 10): Promise<TxRecord[]> {
+  const connection = getConnection();
+
+  const sigs = await connection.getSignaturesForAddress(pubkey, { limit });
+  if (sigs.length === 0) return [];
+
+  const parsed = (await connection.getParsedTransactions(
+    sigs.map((s) => s.signature),
+    { maxSupportedTransactionVersion: 0, commitment: "confirmed" },
+  )) as (ParsedTransactionWithMeta | null)[];
+
+  const records: TxRecord[] = [];
+
+  for (let i = 0; i < sigs.length; i++) {
+    const sig = sigs[i];
+    const tx = parsed[i];
+    if (!tx || !sig) continue;
+
+    const fee = (tx.meta?.fee ?? 0) / LAMPORTS_PER_SOL;
+    const status: "success" | "failed" =
+      tx.meta?.err ? "failed" : "success";
+
+    let from = "";
+    let to = "";
+    let amount = 0;
+
+    const instructions = tx.transaction.message.instructions;
+    for (const ix of instructions) {
+      if (
+        "parsed" in ix &&
+        ix.program === "system" &&
+        ix.parsed &&
+        typeof ix.parsed === "object" &&
+        "type" in ix.parsed &&
+        ix.parsed.type === "transfer"
+      ) {
+        const info = (ix.parsed as { info: { source: string; destination: string; lamports: number } }).info;
+        from = info.source;
+        to = info.destination;
+        amount = info.lamports / LAMPORTS_PER_SOL;
+        break;
+      }
+    }
+
+    records.push({
+      signature: sig.signature,
+      slot: sig.slot,
+      blockTime: sig.blockTime ?? null,
+      status,
+      from,
+      to,
+      amount,
+      fee,
+    });
+  }
+
+  return records;
+}
+
+export async function GET() {
+  try {
+    const pubA = new PublicKey(process.env.WALLET_A_PUBLIC ?? "");
+    const pubB = new PublicKey(process.env.WALLET_B_PUBLIC ?? "");
+
+    const [histA, histB] = await Promise.all([
+      getHistory(pubA, 8),
+      getHistory(pubB, 8),
+    ]);
+
+    // Merge and sort by slot desc, deduplicate by signature
+    const seen = new Set<string>();
+    const merged: TxRecord[] = [];
+    for (const tx of [...histA, ...histB]) {
+      if (!seen.has(tx.signature)) {
+        seen.add(tx.signature);
+        merged.push(tx);
+      }
+    }
+    merged.sort((a, b) => b.slot - a.slot);
+
+    return NextResponse.json({ transactions: merged.slice(0, 12) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

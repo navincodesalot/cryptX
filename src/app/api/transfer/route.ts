@@ -16,9 +16,8 @@ export async function POST(req: Request) {
     const walletA = getWalletA();
     const walletB = getWalletB();
 
-    const sender = from === "A" ? walletA : walletB;
-    const recipient =
-      from === "A" ? walletB.publicKey : walletA.publicKey;
+    const sender    = from === "A" ? walletA : walletB;
+    const recipient = from === "A" ? walletB.publicKey : walletA.publicKey;
 
     const sig = await sendTransfer(sender, new PublicKey(recipient), amount);
 
