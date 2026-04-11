@@ -417,6 +417,7 @@ export default function HomePage() {
     words: string[];
   } | null>(null);
   const [seedDownloaded, setSeedDownloaded] = useState(false);
+  const [sendingAck, setSendingAck] = useState(false);
   const [recoverModal, setRecoverModal] = useState<{
     ledger: "A" | "B";
   } | null>(null);
@@ -641,6 +642,28 @@ export default function HomePage() {
           ? e.message
           : "Registration or seed transfer failed — check USB & firmware",
       );
+    }
+  };
+
+  /* ── Confirm seed backup → send SEED_ACK to device ─────────────────────── */
+  const confirmSeedBackup = async () => {
+    if (!seedBackupModal) return;
+    const { ledger } = seedBackupModal;
+    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
+    setSendingAck(true);
+    try {
+      if (device) {
+        await device.send("SEED_ACK");
+        // Device will emit SEED_ACKED then transition to STATE:SET_PIN — handled by onLine
+      }
+      setSeedBackupModal(null);
+      toast.success(
+        `Ledger ${ledger} seed saved — now set your PIN on the device`,
+      );
+    } catch {
+      toast.error("Failed to send acknowledgement to device");
+    } finally {
+      setSendingAck(false);
     }
   };
 
@@ -1108,18 +1131,14 @@ export default function HomePage() {
               </Button>
               <Button
                 className="w-full"
-                disabled={!seedDownloaded}
-                onClick={() => {
-                  const ledger = seedBackupModal.ledger;
-                  setSeedBackupModal(null);
-                  toast.success(
-                    `Registered as Ledger ${ledger} — now set your PIN on the device`,
-                  );
-                }}
+                disabled={!seedDownloaded || sendingAck}
+                onClick={confirmSeedBackup}
               >
-                {seedDownloaded
-                  ? "I've Saved It — Continue"
-                  : "Download first to continue"}
+                {sendingAck
+                  ? "Confirming…"
+                  : seedDownloaded
+                    ? "I've Saved It — Continue"
+                    : "Download first to continue"}
               </Button>
             </div>
           </div>
@@ -1219,6 +1238,7 @@ function LedgerCard({
 
   const isSetup =
     hwState.mode === "INIT" ||
+    hwState.mode === "SEED_BACKUP" ||
     hwState.mode === "SET_PIN" ||
     hwState.mode === "CONFIRM_PIN";
   const isWiped = hwState.mode === "WIPED";
@@ -1305,6 +1325,24 @@ function LedgerCard({
               onClick={onRegister}
             >
               Register as Ledger {index}
+            </Button>
+          </div>
+        )}
+
+        {showSetupFlow && hwState.mode === "SEED_BACKUP" && (
+          <div className="bg-muted/50 space-y-3 rounded-lg p-4">
+            <p className="text-sm font-medium">Seed Phrase Backup</p>
+            <p className="text-muted-foreground text-xs">
+              The device is waiting for you to save your seed phrase. If the
+              panel didn&apos;t open, click below to re-send.
+            </p>
+            <Button
+              size="sm"
+              className="w-full"
+              onClick={onRegister}
+              disabled={busy}
+            >
+              Re-send Seed Phrase
             </Button>
           </div>
         )}

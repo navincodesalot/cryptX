@@ -22,6 +22,7 @@
  * STATE MACHINE
  * ─────────────
  *   INIT        → Awaiting SETID from host
+ *   SEED_BACKUP → Seed generated & sent; waiting for host SEED_ACK before PIN setup
  *   SET_PIN     → User creates 6-digit PIN via buttons
  *   CONFIRM_PIN → User re-enters PIN to confirm
  *   READY       → Idle, waiting for SIGN commands
@@ -40,6 +41,7 @@
  *   PING            → PONG
  *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
  *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
+ *   SEED_ACK        → SEED_ACKED (MODE_SEED_BACKUP only) then enters SET_PIN
  *   MODE <n>        → mode switch (with guards)
  *   SIGN            → PENDING (then PIN entry on device)
  *   CANCEL          → READY  (same as holding both buttons 5s while SIGNING)
@@ -147,7 +149,8 @@ enum Mode {
   MODE_CONFIRM_PIN,  // 2
   MODE_READY,        // 3
   MODE_SIGNING,      // 4
-  MODE_WIPED         // 5
+  MODE_WIPED,        // 5
+  MODE_SEED_BACKUP   // 6 — seed generated, waiting for host SEED_ACK before allowing PIN setup
 };
 
 Mode          currentMode    = MODE_INIT;
@@ -619,6 +622,7 @@ const char* modeName(Mode m) {
     case MODE_READY:       return "READY";
     case MODE_SIGNING:     return "SIGNING";
     case MODE_WIPED:       return "WIPED";
+    case MODE_SEED_BACKUP: return "SEED_BACKUP";
     default:               return "UNKNOWN";
   }
 }
@@ -667,6 +671,11 @@ void enterMode(Mode m) {
     case MODE_WIPED:
       lcd.setRGB(255, 255, 255);
       lcdShow("!! WIPED !!", "Recover via app");
+      break;
+
+    case MODE_SEED_BACKUP:
+      lcd.setRGB(255, 255, 255);
+      lcdShow("Backup phrase", "Check the UI!");
       break;
   }
 }
@@ -962,13 +971,13 @@ void handleCmd(const String& cmd) {
     }
     printSeedToSerial();
 
-    if (currentMode == MODE_INIT) {
+    if (currentMode == MODE_INIT || currentMode == MODE_SEED_BACKUP) {
       char msg[17];
       snprintf(msg, sizeof(msg), "Ledger %c", deviceId);
       lcd.setRGB(255, 255, 255);
       lcdShow(msg, "Registered!");
       delay(1500);
-      enterMode(MODE_SET_PIN);
+      enterMode(MODE_SEED_BACKUP);
     }
 
   } else if (cmd.startsWith("MODE ")) {
@@ -1016,6 +1025,14 @@ void handleCmd(const String& cmd) {
     } else {
       Serial.println("READY");
     }
+
+  } else if (cmd == "SEED_ACK") {
+    if (currentMode != MODE_SEED_BACKUP) {
+      Serial.println("ERR:NOT_BACKUP");
+      return;
+    }
+    Serial.println("SEED_ACKED");
+    enterMode(MODE_SET_PIN);
 
   } else if (cmd == "SEED_VERIFY") {
     if (currentMode != MODE_WIPED) {
@@ -1165,7 +1182,8 @@ void setup() {
   if (devState >= 2 && isPinSet()) {
     enterMode(MODE_READY);
   } else if (devState >= 1) {
-    enterMode(MODE_SET_PIN);
+    // Registered but PIN not yet set — seed must be re-acked via UI before PIN setup
+    enterMode(MODE_SEED_BACKUP);
   } else {
     enterMode(MODE_INIT);
   }
