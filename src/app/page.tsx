@@ -415,9 +415,13 @@ export default function HomePage() {
   const deviceARef = useRef<DeviceConnection | null>(null);
   const deviceBRef = useRef<DeviceConnection | null>(null);
 
-  const hasSerial = useRef(
-    typeof window !== "undefined" && "serial" in navigator,
-  ).current;
+  /** Must not read `navigator` during SSR — it differs on client (Web Serial) and causes hydration mismatches. */
+  const [hasSerial, setHasSerial] = useState(false);
+  useEffect(() => {
+    setHasSerial(
+      typeof navigator !== "undefined" && "serial" in navigator,
+    );
+  }, []);
 
   const addrA = ledgerA?.address ?? "";
   const addrB = ledgerB?.address ?? "";

@@ -1,9 +1,9 @@
 import "@/styles/globals.css";
 
 import { type Metadata } from "next";
-import { Geist } from "next/font/google";
-import { ThemeProvider } from "next-themes";
+import { GeistSans } from "geist/font/sans";
 import { Toaster } from "@/components/ui/sonner";
+import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
   title: "cryptX — Ledger Network",
@@ -11,21 +11,24 @@ export const metadata: Metadata = {
   icons: [{ rel: "icon", url: "/favicon.ico" }],
 };
 
-const geist = Geist({
-  subsets: ["latin"],
-  variable: "--font-geist-sans",
-});
-
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${geist.variable}`} suppressHydrationWarning>
-      <body>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          {children}
-          <Toaster richColors />
-        </ThemeProvider>
+    <html
+      lang="en"
+      className={cn("dark", GeistSans.variable)}
+      suppressHydrationWarning
+    >
+      <body
+        className={cn(
+          GeistSans.className,
+          "bg-background text-foreground antialiased",
+        )}
+        suppressHydrationWarning
+      >
+        {children}
+        <Toaster richColors />
       </body>
     </html>
   );
