@@ -62,6 +62,8 @@
  *   WIPED                 3 strikes, device wiped
  *   CONFIRMED             transaction approved
  *   REJECTED              transaction rejected (timeout/cancel)
+ *   SIGN_CANCEL:<n>       during SIGNING, hold-to-cancel countdown (n = 5…1 sec left)
+ *   SIGN_CANCEL_ABORT     released buttons before cancel completed
  *
  * EEPROM MEMORY MAP  (v5)
  * ──────────────────────────────────────────────────────────────────────────
@@ -1065,6 +1067,8 @@ void loop() {
         uint8_t remain = (uint8_t)((SIGN_HOLD_CANCEL_MS - held + 999UL) / 1000UL);
         if (remain != signHoldLastSec) {
           signHoldLastSec = remain;
+          Serial.print("SIGN_CANCEL:");
+          Serial.println(remain);
           lcd.setRGB(255, 255, 255);
           char line2[17];
           snprintf(line2, sizeof(line2), "hold %us...", remain);
@@ -1075,6 +1079,7 @@ void loop() {
       if (signBothHoldStart != 0) {
         signBothHoldStart = 0;
         signHoldLastSec   = 255;
+        Serial.println("SIGN_CANCEL_ABORT");
         lcd.setRGB(255, 255, 255);
         lcdShowPinProgress("Sign: Enter PIN", pinPos);
       }

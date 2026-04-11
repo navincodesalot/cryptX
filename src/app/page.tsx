@@ -42,6 +42,8 @@ const HARDWARE_MODE =
   process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
 
 const PIN_LENGTH = 6;
+/** Must match firmware SIGN_TIMEOUT_MS (ledger.ino) */
+const SIGN_SESSION_MS = 30_000;
 
 /* ─── Types ─────────────────────────────────────────────────────────────── */
 interface WalletInfo {
@@ -77,6 +79,10 @@ interface HwState {
   pinSet: boolean;
   pinFails: number;
   pinProgress: number;
+  /** 1–5 = device-reported seconds left for hold-to-cancel; null = idle */
+  signCancelHold: number | null;
+  /** Client-side deadline for PIN signing window (synced on STATE:SIGNING) */
+  signExpiresAt: number | null;
 }
 
 const INITIAL_HW: HwState = {
@@ -86,6 +92,8 @@ const INITIAL_HW: HwState = {
   pinSet: false,
   pinFails: 0,
   pinProgress: 0,
+  signCancelHold: null,
+  signExpiresAt: null,
 };
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -222,18 +230,26 @@ function processSerialLine(
       const deviceId = parts[1] ?? "?";
       const pinSet = (parts[2] ?? "0") === "1";
       const pinFails = parseInt(parts[3] ?? "0", 10) || 0;
+      const signing = mode === "SIGNING";
       setState((p) => ({
         ...p,
         mode,
         deviceId,
         pinSet,
         pinFails,
+        pinProgress: signing ? p.pinProgress : 0,
+        signCancelHold: null,
+        signExpiresAt: signing ? Date.now() + SIGN_SESSION_MS : null,
       }));
     } else if (parts.length === 1) {
+      const m = parts[0] ?? "UNKNOWN";
+      const signing = m === "SIGNING";
       setState((p) => ({
         ...p,
-        mode: parts[0] ?? "UNKNOWN",
+        mode: m,
         pinProgress: 0,
+        signCancelHold: null,
+        signExpiresAt: signing ? Date.now() + SIGN_SESSION_MS : null,
       }));
     }
   } else if (line.startsWith("PIN_PROGRESS:")) {
@@ -256,11 +272,25 @@ function processSerialLine(
       mode: "WIPED",
       pinSet: false,
       pinProgress: 0,
+      signCancelHold: null,
+      signExpiresAt: null,
     }));
   } else if (line === "PIN_MISMATCH") {
     setState((p) => ({ ...p, pinProgress: 0 }));
   } else if (line === "REJECTED") {
-    setState((p) => ({ ...p, pinProgress: 0 }));
+    setState((p) => ({
+      ...p,
+      pinProgress: 0,
+      signCancelHold: null,
+      signExpiresAt: null,
+    }));
+  } else if (line.startsWith("SIGN_CANCEL:")) {
+    const n = parseInt(line.slice(11), 10);
+    if (n >= 1 && n <= 5) {
+      setState((p) => ({ ...p, signCancelHold: n }));
+    }
+  } else if (line === "SIGN_CANCEL_ABORT") {
+    setState((p) => ({ ...p, signCancelHold: null }));
   } else if (line.startsWith("DEVICE:")) {
     setState((p) => ({ ...p, deviceId: line.slice(7) }));
   }
@@ -281,6 +311,51 @@ function PinDots({ filled }: { filled: number }) {
           )}
         />
       ))}
+    </div>
+  );
+}
+
+/** Counts down the ~30s firmware signing window (starts when STATE:SIGNING is seen). */
+function SigningDeadline({ endsAt }: { endsAt: number | null }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (endsAt == null) return;
+    const id = setInterval(() => setTick((n) => n + 1), 250);
+    return () => clearInterval(id);
+  }, [endsAt]);
+  if (endsAt == null) return null;
+  const sec = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  if (sec <= 0) return null;
+  return (
+    <p className="text-muted-foreground text-xs tabular-nums">
+      Signing window ~{sec}s left
+    </p>
+  );
+}
+
+/** Synced to device SIGN_CANCEL:1–5 lines (hold-to-cancel). */
+function CancelHoldProgress({ sec }: { sec: number | null }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-muted-foreground text-[11px] leading-snug">
+        {sec == null
+          ? "Hold both buttons ~5s to cancel on the device."
+          : "Cancelling on device — release to stop."}
+      </p>
+      <div className="flex gap-1">
+        {Array.from({ length: 5 }).map((_, i) => {
+          const filled = sec != null && 6 - sec > i;
+          return (
+            <span
+              key={i}
+              className={cn(
+                "h-1.5 flex-1 rounded-full transition-all duration-200",
+                filled ? "bg-amber-500/90" : "bg-muted-foreground/20",
+              )}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -434,6 +509,8 @@ export default function HomePage() {
         pinSet,
         pinFails,
         pinProgress: 0,
+        signCancelHold: null,
+        signExpiresAt: null,
       });
 
       toast.success(`Ledger ${ledger} connected — ${mode}`);
@@ -1005,10 +1082,12 @@ function LedgerCard({
               Signing Transaction
             </p>
             <p className="text-muted-foreground text-xs">
-              Enter your PIN with the two buttons. Hold both at once for 5
-              seconds to cancel.
+              Enter your PIN with the two buttons (same dots as setup). Hold
+              both at once on the device to cancel — progress syncs below.
             </p>
             <PinDots filled={hwState.pinProgress} />
+            <SigningDeadline endsAt={hwState.signExpiresAt} />
+            <CancelHoldProgress sec={hwState.signCancelHold} />
             {hwState.pinFails > 0 && (
               <p className="text-destructive text-xs">
                 {hwState.pinFails} wrong attempt
