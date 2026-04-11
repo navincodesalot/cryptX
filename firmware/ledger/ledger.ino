@@ -21,9 +21,10 @@
  *
  * PIN INPUT
  * ─────────
- *   Button 1 = digit "1",  Button 2 = digit "2"
- *   Both pressed simultaneously = "Enter" (submit)
- *   6 digits required.  300ms debounce per press.
+ *   Button 1 = digit "1",  Button 2 = digit "2" (one press each, rising edge)
+ *   If both buttons are down together: ignore (no digit) until both released
+ *   6 digits — the 6th digit auto-submits (no "enter" gesture)
+ *   After each digit you must release all buttons before the next counts
  *
  * SERIAL PROTOCOL  (115200 baud, newline-terminated)
  * ────────────────────────────────────────────────────
@@ -102,8 +103,6 @@ static const uint8_t SECRET_KEY[8] = {
 #define PIN_BTN2  3
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-#define DEBOUNCE_MS        300UL
-#define BOTH_WINDOW_MS     100UL
 #define SIGN_TIMEOUT_MS  30000UL
 
 // ── State machine ────────────────────────────────────────────────────────────
@@ -124,11 +123,6 @@ String        inputBuf       = "";
 uint8_t       pinBuf[PIN_LENGTH];
 uint8_t       pinPos         = 0;
 uint8_t       tempPin[PIN_LENGTH];  // holds first entry during confirm flow
-
-// Button debounce
-unsigned long lastBtnTime    = 0;
-bool          btn1Last       = false;
-bool          btn2Last       = false;
 
 // Signing timeout
 unsigned long signStartTime  = 0;
@@ -269,9 +263,6 @@ void lcdShowPinProgress(const char* header, uint8_t filled) {
   for (uint8_t i = 0; i < PIN_LENGTH; i++) {
     lcd.print(i < filled ? '*' : '_');
   }
-  if (filled >= PIN_LENGTH) {
-    lcd.print(" OK?");
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -405,137 +396,134 @@ void printState() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Button reading with debounce + "both pressed" detection
+// Button reading — single-button edges only; both pressed together = ignored
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Returns: 0 = nothing, 1 = btn1, 2 = btn2, 3 = both (enter)
+// Returns: 0 = nothing, 1 = digit 1, 2 = digit 2
 uint8_t readButtons() {
-  bool b1 = (digitalRead(PIN_BTN1) == LOW);
-  bool b2 = (digitalRead(PIN_BTN2) == LOW);
+  static bool prev1     = false;
+  static bool prev2     = false;
+  static bool bothLatch = false;
+  static bool rearmed   = true;  // false = wait for all-up after a digit
 
-  unsigned long now = millis();
-  if (now - lastBtnTime < DEBOUNCE_MS) return 0;
+  bool p1 = (digitalRead(PIN_BTN1) == LOW);
+  bool p2 = (digitalRead(PIN_BTN2) == LOW);
 
-  if (b1 && b2) {
-    lastBtnTime = now;
-    btn1Last = true;
-    btn2Last = true;
-    return 3;
+  // Both down together: ignore until both released (no digits)
+  if (p1 && p2) {
+    bothLatch = true;
+    prev1 = true;
+    prev2 = true;
+    return 0;
   }
 
-  if (b1 && !btn1Last) {
-    // Wait briefly to see if btn2 also comes down
-    delay(BOTH_WINDOW_MS);
-    if (digitalRead(PIN_BTN2) == LOW) {
-      lastBtnTime = now;
-      btn1Last = true;
-      btn2Last = true;
-      return 3;
+  if (bothLatch) {
+    if (!p1 && !p2) {
+      bothLatch = false;
+      prev1 = false;
+      prev2 = false;
+      rearmed = true;
     }
-    lastBtnTime = now;
-    btn1Last = true;
-    return 1;
+    return 0;
   }
 
-  if (b2 && !btn2Last) {
-    delay(BOTH_WINDOW_MS);
-    if (digitalRead(PIN_BTN1) == LOW) {
-      lastBtnTime = now;
-      btn1Last = true;
-      btn2Last = true;
-      return 3;
+  // After a digit: require full release before another counts
+  if (!rearmed) {
+    if (!p1 && !p2) {
+      rearmed = true;
+      prev1 = false;
+      prev2 = false;
+    } else {
+      prev1 = p1;
+      prev2 = p2;
     }
-    lastBtnTime = now;
-    btn2Last = true;
-    return 2;
+    return 0;
   }
 
-  if (!b1) btn1Last = false;
-  if (!b2) btn2Last = false;
+  uint8_t out = 0;
+  if (p1 && !p2 && !prev1) out = 1;
+  else if (p2 && !p1 && !prev2) out = 2;
 
-  return 0;
+  if (out != 0) rearmed = false;
+
+  prev1 = p1;
+  prev2 = p2;
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PIN entry handler (shared by SET_PIN, CONFIRM_PIN, SIGNING)
+// PIN entry — 6th digit auto-finalizes (no dual-button "enter")
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void handlePinButton(uint8_t btn) {
-  if (btn == 0) return;
+void finalizeSixDigitPin() {
+  if (currentMode == MODE_SET_PIN) {
+    memcpy(tempPin, pinBuf, PIN_LENGTH);
+    enterMode(MODE_CONFIRM_PIN);
 
-  if (btn == 3) {
-    // ENTER pressed
-    if (pinPos < PIN_LENGTH) return;  // not enough digits yet
+  } else if (currentMode == MODE_CONFIRM_PIN) {
+    bool match = true;
+    for (uint8_t i = 0; i < PIN_LENGTH; i++) {
+      if (pinBuf[i] != tempPin[i]) { match = false; break; }
+    }
+    if (match) {
+      savePin(pinBuf);
+      Serial.println("PIN_OK");
+      lcd.setRGB(0, 255, 0);
+      lcdShow("PIN Saved!", "");
+      delay(1500);
+      enterMode(MODE_READY);
+    } else {
+      Serial.println("PIN_MISMATCH");
+      lcd.setRGB(255, 0, 0);
+      lcdShow("PINs don't", "match! Retry...");
+      delay(2000);
+      enterMode(MODE_SET_PIN);
+    }
 
-    if (currentMode == MODE_SET_PIN) {
-      memcpy(tempPin, pinBuf, PIN_LENGTH);
-      enterMode(MODE_CONFIRM_PIN);
+  } else if (currentMode == MODE_SIGNING) {
+    if (checkPin(pinBuf)) {
+      setPinFails(0);
+      logConfirm();
+      Serial.println("PIN_OK");
+      Serial.println("CONFIRMED");
+      lcd.setRGB(0, 255, 0);
+      lcdShow("TX Approved!", "");
+      delay(2000);
+      enterMode(MODE_READY);
+    } else {
+      uint8_t fails = getPinFails() + 1;
+      setPinFails(fails);
+      logReject();
 
-    } else if (currentMode == MODE_CONFIRM_PIN) {
-      bool match = true;
-      for (uint8_t i = 0; i < PIN_LENGTH; i++) {
-        if (pinBuf[i] != tempPin[i]) { match = false; break; }
-      }
-      if (match) {
-        savePin(pinBuf);
-        Serial.println("PIN_OK");
-        lcd.setRGB(0, 255, 0);
-        lcdShow("PIN Saved!", "");
-        delay(1500);
-        enterMode(MODE_READY);
+      if (fails >= MAX_PIN_FAILS) {
+        wipeEEPROM();
+        Serial.println("WIPED");
+        enterMode(MODE_WIPED);
       } else {
-        Serial.println("PIN_MISMATCH");
+        uint8_t left = MAX_PIN_FAILS - fails;
+        Serial.print("PIN_FAIL:");
+        Serial.println(left);
+
         lcd.setRGB(255, 0, 0);
-        lcdShow("PINs don't", "match! Retry...");
+        char msg[17];
+        snprintf(msg, sizeof(msg), "Wrong! %d left", left);
+        lcdShow("Bad PIN", msg);
         delay(2000);
-        enterMode(MODE_SET_PIN);
-      }
 
-    } else if (currentMode == MODE_SIGNING) {
-      if (checkPin(pinBuf)) {
-        setPinFails(0);
-        logConfirm();
-        Serial.println("PIN_OK");
-        Serial.println("CONFIRMED");
-        lcd.setRGB(0, 255, 0);
-        lcdShow("TX Approved!", "");
-        delay(2000);
-        enterMode(MODE_READY);
-      } else {
-        uint8_t fails = getPinFails() + 1;
-        setPinFails(fails);
-        logReject();
-
-        if (fails >= MAX_PIN_FAILS) {
-          wipeEEPROM();
-          Serial.println("WIPED");
-          enterMode(MODE_WIPED);
-        } else {
-          uint8_t left = MAX_PIN_FAILS - fails;
-          Serial.print("PIN_FAIL:");
-          Serial.println(left);
-
-          lcd.setRGB(255, 0, 0);
-          char msg[17];
-          snprintf(msg, sizeof(msg), "Wrong! %d left", left);
-          lcdShow("Bad PIN", msg);
-          delay(2000);
-
-          // Re-enter signing PIN entry
-          pinPos = 0;
-          lcd.setRGB(255, 255, 0);
-          lcdShowPinProgress("Sign: Enter PIN", 0);
-          Serial.println("PIN_PROGRESS:0");
-        }
+        pinPos = 0;
+        lcd.setRGB(255, 255, 0);
+        lcdShowPinProgress("Sign: Enter PIN", 0);
+        Serial.println("PIN_PROGRESS:0");
       }
     }
-    return;
   }
+}
 
-  // Single button press: digit 1 or 2
+void handlePinButton(uint8_t btn) {
+  if (btn == 0 || (btn != 1 && btn != 2)) return;
   if (pinPos >= PIN_LENGTH) return;
 
-  pinBuf[pinPos] = btn;  // 1 or 2
+  pinBuf[pinPos] = btn;
   pinPos++;
 
   Serial.print("PIN_PROGRESS:");
@@ -547,6 +535,10 @@ void handlePinButton(uint8_t btn) {
   else header = "Sign: Enter PIN";
 
   lcdShowPinProgress(header, pinPos);
+
+  if (pinPos == PIN_LENGTH) {
+    finalizeSixDigitPin();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

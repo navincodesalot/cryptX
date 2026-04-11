@@ -949,14 +949,11 @@ function LedgerCard({
                   : "Confirm PIN"}
               </p>
               <p className="text-muted-foreground text-xs">
-                Press buttons on your Arduino
+                Short press: button 1 = digit 1, button 2 = digit 2 (six
+                digits, then it submits). Release between presses. Pressing
+                both buttons together does nothing.
               </p>
               <PinDots filled={hwState.pinProgress} />
-              {hwState.pinProgress >= PIN_LENGTH && (
-                <p className="text-xs text-amber-500">
-                  Press both buttons to submit
-                </p>
-              )}
             </div>
           )}
 
