@@ -367,32 +367,6 @@ function SigningDeadline({ endsAt }: { endsAt: number | null }) {
   );
 }
 
-/** Synced to device SIGN_CANCEL:1–5 lines (hold-to-cancel). */
-function CancelHoldProgress({ sec }: { sec: number | null }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-muted-foreground text-[11px] leading-snug">
-        {sec == null
-          ? "Hold both buttons ~5s to cancel on the device."
-          : "Cancelling on device — release to stop."}
-      </p>
-      <div className="flex gap-1">
-        {Array.from({ length: 5 }).map((_, i) => {
-          const filled = sec != null && 6 - sec > i;
-          return (
-            <span
-              key={i}
-              className={cn(
-                "h-1.5 flex-1 rounded-full transition-all duration-200",
-                filled ? "bg-amber-500/90" : "bg-muted-foreground/20",
-              )}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Page                                                                      */
@@ -552,12 +526,14 @@ export default function HomePage() {
         }
       }
 
-      // Enforce A/B match in hardware mode
+      // Enforce A/B match in hardware mode — skip for INIT/WIPED/SEED_BACKUP where ID may not yet be set
       if (
         HARDWARE_MODE &&
         detectedId !== "?" &&
         detectedId !== ledger &&
-        mode !== "INIT"
+        mode !== "INIT" &&
+        mode !== "WIPED" &&
+        mode !== "SEED_BACKUP"
       ) {
         await device.close();
         toast.error(
@@ -1395,12 +1371,10 @@ function LedgerCard({
               Signing Transaction
             </p>
             <p className="text-muted-foreground text-xs">
-              Enter your PIN with the two buttons (same dots as setup). Hold
-              both at once on the device to cancel — progress syncs below.
+              Enter your PIN on the device using the two buttons.
             </p>
             <PinDots filled={hwState.pinProgress} />
             <SigningDeadline endsAt={hwState.signExpiresAt} />
-            <CancelHoldProgress sec={hwState.signCancelHold} />
             {hwState.pinFails > 0 && (
               <p className="text-destructive text-xs">
                 {hwState.pinFails} wrong attempt
