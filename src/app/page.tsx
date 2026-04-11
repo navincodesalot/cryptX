@@ -619,10 +619,19 @@ export default function HomePage() {
     }
   };
 
-  /* ── Confirm seed backup ──────────────────────────────────────────────── */
-  const confirmSeedBackup = () => {
+  /* ── Confirm seed backup → send SEED_ACK so device enters PIN setup ──── */
+  const confirmSeedBackup = async () => {
     if (!seedBackupModal) return;
     const { ledger } = seedBackupModal;
+    const device =
+      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    try {
+      if (device) {
+        await device.send("SEED_ACK");
+      }
+    } catch {
+      /* device may have disconnected — PIN setup still works on reconnect */
+    }
     setSeedBackupModal(null);
     toast.success(
       `Ledger ${ledger} seed saved — now set your PIN on the device`,

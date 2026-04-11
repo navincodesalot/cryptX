@@ -41,6 +41,7 @@
  *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
  *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
  *   FACTORY_RESET   → FACTORY_OK — full EEPROM wipe, salt rotate, ID=A, MODE_INIT
+ *   SEED_ACK        → SEED_ACKED then enters SET_PIN (MODE_INIT + registered only)
  *   MODE <n>        → mode switch (with guards)
  *   SIGN            → PENDING (then PIN entry on device)
  *   CANCEL          → READY  (same as holding both buttons 5s while SIGNING)
@@ -1011,7 +1012,7 @@ void handleCmd(const String& cmdIn) {
       lcd.setRGB(255, 255, 255);
       lcdShow(msg, "Registered!");
       delay(1500);
-      enterMode(MODE_SET_PIN);
+      lcdShow("Save your seed!", "Then continue...");
     }
 
   } else if (cmd.startsWith("MODE ")) {
@@ -1059,6 +1060,14 @@ void handleCmd(const String& cmdIn) {
     } else {
       Serial.println("READY");
     }
+
+  } else if (cmd == "SEED_ACK") {
+    if (currentMode != MODE_INIT || deviceId == '?') {
+      Serial.println("ERR:NOT_READY");
+      return;
+    }
+    Serial.println("SEED_ACKED");
+    enterMode(MODE_SET_PIN);
 
   } else if (cmd == "SEED_VERIFY") {
     if (currentMode != MODE_WIPED) {
@@ -1128,7 +1137,8 @@ void handleCmd(const String& cmdIn) {
     generateAndStoreSeed();
     printSeedToSerial();
     Serial.println("RECOVERED");
-    enterMode(MODE_SET_PIN);
+    enterMode(MODE_INIT);
+    lcdShow("Save your seed!", "Then continue...");
 
   } else if (cmd == "CHALLENGE") {
     generateNonce(currentNonce);
@@ -1184,7 +1194,8 @@ void handleCmd(const String& cmdIn) {
       generateAndStoreSeed();
       printSeedToSerial();
       Serial.println("UNLOCKED");
-      enterMode(MODE_SET_PIN);
+      enterMode(MODE_INIT);
+      lcdShow("Save your seed!", "Then continue...");
     } else {
       eepromWrite(ADDR_CONSEC_REJECTS, 0);
       clearAuthFails();
