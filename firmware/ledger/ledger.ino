@@ -1,8 +1,17 @@
 /*
- * cryptX Ledger — Arduino Uno R3  (v4 — LCD + PIN Edition)
- * ───────────────────────────────────────────────────────────────────────
+ * cryptX Ledger — Arduino Uno R3  (v5 — SipHash AUTH + derived keys)
+ * ───────────────────────────────────────────────────────────────────────────
  * Hardware wallet simulator for Solana transactions.
  * Grove LCD RGB Backlight + 2 buttons + EEPROM-backed state machine.
+ *
+ * LOCK / FUSE BITS (ATmega328P — not set from sketch; verify in datasheet)
+ * ───────────────────────────────────────────────────────────────────────────
+ * Without lock bits firmware can be dumped and any obfuscation is recoverable.
+ * After programming set lock bits with avrdude / Atmel Studio / Arduino-as-ISP
+ * per Microchip ATmega328P datasheet "Memory Programming" (Lock Bits).
+ * Example workflow only — WRONG VALUES CAN DISABLE ISP OR BRICK THE CHIP:
+ *   avrdude -c usbasp -p m328p -U lock:w:0xCF:m
+ * Always confirm the hex mask against your programmer and the current datasheet.
  *
  * HARDWARE
  * ────────
@@ -27,17 +36,22 @@
  *
  * SERIAL PROTOCOL  (115200 baud, newline-terminated)
  * ────────────────────────────────────────────────────
+ *   On boot / META: META:SIG=<6 hex>;SALT=<16 hex>  (host stores for AUTH)
  *   PING            → PONG
  *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
- *   SETID <X>       → ID_SAVED + DEVICE:<X> + auto-transition to SET_PIN
+ *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
  *   MODE <n>        → mode switch (with guards)
  *   SIGN            → PENDING (then PIN entry on device)
- *   CANCEL          → READY
+ *   CANCEL          → READY  (same as holding both buttons 5s while SIGNING)
  *   RECOVER         → clears EEPROM, restarts at INIT
  *   CHALLENGE       → NONCE:<8 hex bytes>
- *   AUTH <hex>      → STATS:<c>,<r>,<streak>,<locked>  |  AUTH_FAIL
+ *   AUTH <hex>      → STATS:<c>,<r>,<streak>,<locked>  |  AUTH_FAIL  |  AUTH_LOCKOUT
  *   RESET_STATS     → STATS_RESET
  *   UNLOCK          → UNLOCKED
+ *
+ * AUTH: host sends SipHash-2-4(authKey, nonce_8_bytes) as 16 hex chars.
+ * authKey is derived from chip signature + EEPROM salt + device id + runtime
+ * peppers (see src/lib/ledgerSipAuth.ts — keep in sync).
  *
  * UNSOLICITED OUTPUT (emitted on events)
  * ──────────────────────────────────────
@@ -49,8 +63,11 @@
  *   CONFIRMED             transaction approved
  *   REJECTED              transaction rejected (timeout/cancel)
  *
- * EEPROM MEMORY MAP  (all values XOR-encrypted at rest)
- * ────────────────────────────────────────────────────────
+ * EEPROM MEMORY MAP  (v5)
+ * ──────────────────────────────────────────────────────────────────────────
+ *   Plaintext:       0x0F magic (0xCC), 0x10–0x17 per-device salt
+ *   XOR-masked (mask from SipHash(sig+salt, storage peppers)): all other addrs
+ *
  *   0x00  1B  Device state      (0=UNINIT, 1=REGISTERED, 2=PIN_SET)
  *   0x01  1B  Device ID         (char, A-Z)
  *   0x02  6B  PIN digits        (each byte 1 or 2)
@@ -59,26 +76,26 @@
  *   0x0A  2B  Total confirms    (uint16 LE)
  *   0x0C  2B  Total rejects     (uint16 LE)
  *   0x0E  1B  Consecutive reject streak
- *   0x0F  1B  Magic byte        (0xCE)
+ *   0x0F  1B  Magic byte        (0xCC) — plaintext
+ *   0x10  8B  Per-device salt   — plaintext
+ *   0x18  1B  AUTH fail counter
  *
  * SECRET KEY
  * ──────────
- *   Keep the same key in any host tooling that verifies STATS (CHALLENGE/AUTH).
+ *   Keys are derived at runtime from chip signature + EEPROM salt + peppers.
+ *   See loadPepperK0 / loadPepperK1 — keep in sync with src/lib/ledgerSipAuth.ts
  */
 
 #include <Wire.h>
 #include <EEPROM.h>
+#include <stdint.h>
+#include <avr/boot.h>
 #include "rgb_lcd.h"
 
 rgb_lcd lcd;
 
 // ── User configuration ────────────────────────────────────────────────────────
 #define DEFAULT_ID 'A'
-
-// ── Secret key — keep in sync with host tools that use CHALLENGE/AUTH ────────
-static const uint8_t SECRET_KEY[8] = {
-  0x4B, 0x72, 0x79, 0x70, 0x74, 0x58, 0x21, 0x01
-};
 
 // ── EEPROM addresses ─────────────────────────────────────────────────────────
 #define ADDR_DEV_STATE       0x00
@@ -90,19 +107,24 @@ static const uint8_t SECRET_KEY[8] = {
 #define ADDR_REJECT_COUNT    0x0C   // 2 bytes
 #define ADDR_CONSEC_REJECTS  0x0E
 #define ADDR_MAGIC           0x0F
+#define ADDR_SALT_START      0x10   // 8 bytes: 0x10–0x17  (plaintext)
+#define ADDR_SALT_END        0x17
+#define ADDR_AUTH_FAILS      0x18
 
-#define MAGIC_BYTE           0xCE
+#define MAGIC_BYTE           0xCC
 #define PIN_SET_FLAG         0xAA
 #define PIN_LENGTH           6
 #define MAX_PIN_FAILS        3
 #define MAX_CONSEC_REJECTS   5
+#define MAX_AUTH_FAILS       10
 
 // ── Hardware pins ────────────────────────────────────────────────────────────
 #define PIN_BTN1  2
 #define PIN_BTN2  3
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-#define SIGN_TIMEOUT_MS  30000UL
+#define SIGN_TIMEOUT_MS     30000UL
+#define SIGN_HOLD_CANCEL_MS 5000UL   // both buttons held (pins LOW) → cancel TX
 
 // ── State machine ────────────────────────────────────────────────────────────
 enum Mode {
@@ -130,20 +152,200 @@ unsigned long signStartTime  = 0;
 uint8_t       currentNonce[8];
 bool          nonceIssued    = false;
 
+// Derived keys (rebuilt from sig + salt + peppers at runtime)
+uint8_t       gStorageKey[16];
+uint8_t       gAuthKey[16];
+uint8_t       gChipSig[3];
+
+// Forward declaration
+void enterMode(Mode m);
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// XOR helpers
+// SipHash-2-4 (64-bit) — must match src/lib/ledgerSipAuth.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
-uint8_t xorByte(uint8_t value, uint8_t addr) {
-  return value ^ SECRET_KEY[addr % 8];
+static uint64_t rotl64(uint64_t x, uint8_t b) {
+  return (x << b) | (x >> (64 - b));
+}
+
+static void sipround(uint64_t* v0, uint64_t* v1, uint64_t* v2, uint64_t* v3) {
+  uint64_t a = *v0, b = *v1, c = *v2, d = *v3;
+  a += b; b = rotl64(b, 13); b ^= a; a = rotl64(a, 32);
+  c += d; d = rotl64(d, 16); d ^= c;
+  a += d; d = rotl64(d, 21); d ^= a;
+  c += b; b = rotl64(b, 17); b ^= c; c = rotl64(c, 32);
+  *v0 = a; *v1 = b; *v2 = c; *v3 = d;
+}
+
+static uint64_t u8to64_le(const uint8_t* p) {
+  uint64_t v = 0;
+  for (uint8_t i = 0; i < 8; i++) v |= (uint64_t)p[i] << (8 * i);
+  return v;
+}
+
+static void u64_to_le(uint64_t x, uint8_t* p) {
+  for (uint8_t i = 0; i < 8; i++) {
+    p[i] = (uint8_t)(x & 0xFF);
+    x >>= 8;
+  }
+}
+
+static uint64_t cx_siphash24(const uint8_t* key16, const uint8_t* msg, uint8_t len) {
+  uint64_t k0 = u8to64_le(key16);
+  uint64_t k1 = u8to64_le(key16 + 8);
+  uint64_t v0 = k0 ^ 0x736f6d6570736575ULL;
+  uint64_t v1 = k1 ^ 0x646f72616e646f6dULL;
+  uint64_t v2 = k0 ^ 0x6c7967656e657261ULL;
+  uint64_t v3 = k1 ^ 0x7465646279746573ULL;
+
+  uint8_t off  = 0;
+  uint8_t left = len & 7;
+  uint8_t end  = len - left;
+
+  while (off < end) {
+    uint64_t mi = u8to64_le(msg + off);
+    v3 ^= mi;
+    sipround(&v0, &v1, &v2, &v3);
+    sipround(&v0, &v1, &v2, &v3);
+    v0 ^= mi;
+    off += 8;
+  }
+
+  uint64_t b = (uint64_t)len << 56;
+  for (uint8_t i = 0; i < left; i++) {
+    b |= (uint64_t)msg[off + i] << (8 * i);
+  }
+  v3 ^= b;
+  sipround(&v0, &v1, &v2, &v3);
+  sipround(&v0, &v1, &v2, &v3);
+  v0 ^= b;
+  v2 ^= 0xFF;
+  sipround(&v0, &v1, &v2, &v3);
+  sipround(&v0, &v1, &v2, &v3);
+  sipround(&v0, &v1, &v2, &v3);
+  sipround(&v0, &v1, &v2, &v3);
+  return v0 ^ v1 ^ v2 ^ v3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Peppers — keep in sync with src/lib/ledgerSipAuth.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void loadPepperK0(uint8_t k[16]) {
+  const uint8_t s[] = { 0x4B, 0x72, 0x79, 0x70, 0x74, 0x58, 0x21, 0x01 };
+  for (uint8_t i = 0; i < 16; i++) k[i] = s[i % 8] ^ (i * 17 + 3);
+}
+
+void loadPepperK1(uint8_t k[16]) {
+  const uint8_t s[] = { 0x58, 0x21, 0x4B, 0x01, 0x72, 0x79, 0x70, 0x74 };
+  for (uint8_t i = 0; i < 16; i++) k[i] = s[i % 8] ^ (i * 31 + 5);
+}
+
+void loadPepperStorage0(uint8_t k[16]) {
+  const uint8_t s[] = { 0x70, 0x74, 0x58, 0x21, 0x4B, 0x72, 0x79, 0x01 };
+  for (uint8_t i = 0; i < 16; i++) k[i] = s[i % 8] ^ (i * 13 + 7);
+}
+
+void loadPepperStorage1(uint8_t k[16]) {
+  const uint8_t s[] = { 0x79, 0x01, 0x58, 0x74, 0x70, 0x4B, 0x72, 0x21 };
+  for (uint8_t i = 0; i < 16; i++) k[i] = s[i % 8] ^ (i * 11 + 2);
+}
+
+// ── Chip signature + salt ─────────────────────────────────────────────────────
+
+void readDeviceSignature(uint8_t sig[3]) {
+  sig[0] = boot_signature_byte_get(0);
+  sig[1] = boot_signature_byte_get(1);
+  sig[2] = boot_signature_byte_get(2);
+}
+
+void readSaltPlain(uint8_t salt[8]) {
+  for (uint8_t i = 0; i < 8; i++) salt[i] = EEPROM.read(ADDR_SALT_START + i);
+}
+
+// ── Key derivation ────────────────────────────────────────────────────────────
+
+void buildMaterialStorage(uint8_t buf[16], const uint8_t sig[3], const uint8_t salt[8]) {
+  buf[0] = sig[0]; buf[1] = sig[1]; buf[2] = sig[2];
+  for (uint8_t i = 0; i < 8; i++) buf[3 + i] = salt[i];
+  buf[11] = 0;
+  buf[12] = 'S'; buf[13] = 'T'; buf[14] = 'R'; buf[15] = 'G';
+}
+
+void buildMaterialAuth(uint8_t buf[16], const uint8_t sig[3], const uint8_t salt[8], char dev) {
+  buf[0] = sig[0]; buf[1] = sig[1]; buf[2] = sig[2];
+  for (uint8_t i = 0; i < 8; i++) buf[3 + i] = salt[i];
+  buf[11] = (uint8_t)dev;
+  buf[12] = 'c'; buf[13] = 'r'; buf[14] = 'y'; buf[15] = 'p';
+}
+
+void deriveStorageKeysFromSigSalt(const uint8_t sig[3], const uint8_t salt[8]) {
+  uint8_t mat[16];
+  buildMaterialStorage(mat, sig, salt);
+  uint8_t pk0[16], pk1[16];
+  loadPepperStorage0(pk0);
+  loadPepperStorage1(pk1);
+  uint64_t ha = cx_siphash24(pk0, mat, 16);
+  uint64_t hb = cx_siphash24(pk1, mat, 16);
+  u64_to_le(ha, gStorageKey);
+  u64_to_le(hb, gStorageKey + 8);
+}
+
+void rebuildAuthKey(const uint8_t sig[3], const uint8_t salt[8], char dev) {
+  uint8_t mat[16];
+  buildMaterialAuth(mat, sig, salt, dev);
+  uint8_t pk0[16], pk1[16];
+  loadPepperK0(pk0);
+  loadPepperK1(pk1);
+  uint64_t ha = cx_siphash24(pk0, mat, 16);
+  uint64_t hb = cx_siphash24(pk1, mat, 16);
+  u64_to_le(ha, gAuthKey);
+  u64_to_le(hb, gAuthKey + 8);
+}
+
+// ── META line ─────────────────────────────────────────────────────────────────
+
+void printHex(const uint8_t* p, uint8_t n) {
+  for (uint8_t i = 0; i < n; i++) {
+    if (p[i] < 0x10) Serial.print("0");
+    Serial.print(p[i], HEX);
+  }
+}
+
+void printMetaLine(const uint8_t sig[3], const uint8_t salt[8]) {
+  Serial.print("META:SIG=");
+  printHex(sig, 3);
+  Serial.print(";SALT=");
+  printHex(salt, 8);
+  Serial.println();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EEPROM helpers — masking via derived storage key
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool isPlainAddr(uint8_t addr) {
+  if (addr == ADDR_MAGIC) return true;
+  if (addr >= ADDR_SALT_START && addr <= ADDR_SALT_END) return true;
+  return false;
+}
+
+uint8_t maskByte(uint8_t addr) {
+  return gStorageKey[addr % 16] ^ (uint8_t)(addr * 23);
 }
 
 uint8_t eepromRead(uint8_t addr) {
-  return xorByte(EEPROM.read(addr), addr);
+  uint8_t raw = EEPROM.read(addr);
+  if (isPlainAddr(addr)) return raw;
+  return raw ^ maskByte(addr);
 }
 
 void eepromWrite(uint8_t addr, uint8_t value) {
-  EEPROM.write(addr, xorByte(value, addr));
+  if (isPlainAddr(addr)) {
+    EEPROM.write(addr, value);
+    return;
+  }
+  EEPROM.write(addr, value ^ maskByte(addr));
 }
 
 uint16_t eepromRead16(uint8_t addr) {
@@ -158,16 +360,42 @@ void eepromWrite16(uint8_t addr, uint16_t value) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EEPROM init & wipe
+// Salt management
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void initEEPROM() {
-  if (eepromRead(ADDR_MAGIC) != MAGIC_BYTE) {
-    wipeEEPROM();
+void fillRandomSalt(uint8_t salt[8]) {
+  for (uint8_t i = 0; i < 8; i++) {
+    salt[i] = (uint8_t)(analogRead(A0) ^ ((uint8_t)micros()) ^ ((uint8_t)millis()) ^ (i * 47));
+    delay(3);
   }
 }
 
+void ensureSaltWritten() {
+  uint8_t salt[8];
+  readSaltPlain(salt);
+  bool blank = true;
+  for (uint8_t i = 0; i < 8; i++) {
+    if (salt[i] != 0xFF) { blank = false; break; }
+  }
+  if (!blank) return;
+  fillRandomSalt(salt);
+  for (uint8_t i = 0; i < 8; i++) EEPROM.write(ADDR_SALT_START + i, salt[i]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EEPROM init & wipe
+// ═══════════════════════════════════════════════════════════════════════════════
+
 void wipeEEPROM() {
+  uint8_t salt[8];
+  fillRandomSalt(salt);
+  for (uint8_t i = 0; i < 8; i++) EEPROM.write(ADDR_SALT_START + i, salt[i]);
+  EEPROM.write(ADDR_MAGIC, MAGIC_BYTE);
+
+  uint8_t sig[3];
+  readDeviceSignature(sig);
+  deriveStorageKeysFromSigSalt(sig, salt);
+
   eepromWrite(ADDR_DEV_STATE, 0);
   eepromWrite(ADDR_DEVICE_ID, (uint8_t)DEFAULT_ID);
   for (uint8_t i = 0; i < PIN_LENGTH; i++) {
@@ -178,7 +406,15 @@ void wipeEEPROM() {
   eepromWrite16(ADDR_CONFIRM_COUNT, 0);
   eepromWrite16(ADDR_REJECT_COUNT, 0);
   eepromWrite(ADDR_CONSEC_REJECTS, 0);
-  eepromWrite(ADDR_MAGIC, MAGIC_BYTE);
+  eepromWrite(ADDR_AUTH_FAILS, 0);
+}
+
+void initEEPROM() {
+  if (EEPROM.read(ADDR_MAGIC) != MAGIC_BYTE) {
+    wipeEEPROM();
+  } else {
+    ensureSaltWritten();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -234,6 +470,33 @@ void resetStats() {
   eepromWrite16(ADDR_CONFIRM_COUNT, 0);
   eepromWrite16(ADDR_REJECT_COUNT, 0);
   eepromWrite(ADDR_CONSEC_REJECTS, 0);
+  eepromWrite(ADDR_AUTH_FAILS, 0);
+}
+
+// ── AUTH fail tracking ────────────────────────────────────────────────────────
+
+uint8_t getAuthFails() {
+  return eepromRead(ADDR_AUTH_FAILS);
+}
+
+void clearAuthFails() {
+  eepromWrite(ADDR_AUTH_FAILS, 0);
+}
+
+void recordAuthFail() {
+  uint8_t f = (uint8_t)(getAuthFails() + 1);
+  eepromWrite(ADDR_AUTH_FAILS, f);
+  if (f >= MAX_AUTH_FAILS) {
+    wipeEEPROM();
+    deviceId = DEFAULT_ID;
+    readDeviceSignature(gChipSig);
+    uint8_t s[8];
+    readSaltPlain(s);
+    deriveStorageKeysFromSigSalt(gChipSig, s);
+    rebuildAuthKey(gChipSig, s, deviceId);
+    Serial.println("AUTH_LOCKOUT");
+    enterMode(MODE_INIT);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -289,24 +552,24 @@ void enterMode(Mode m) {
 
   switch (m) {
     case MODE_INIT:
-      lcd.setRGB(255, 165, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShow("cryptX Ledger", "Awaiting Setup..");
       break;
 
     case MODE_SET_PIN:
-      lcd.setRGB(0, 100, 255);
+      lcd.setRGB(255, 255, 255);
       lcdShowPinProgress("Create PIN:", 0);
       Serial.println("PIN_PROGRESS:0");
       break;
 
     case MODE_CONFIRM_PIN:
-      lcd.setRGB(0, 100, 255);
+      lcd.setRGB(255, 255, 255);
       lcdShowPinProgress("Confirm PIN:", 0);
       Serial.println("PIN_PROGRESS:0");
       break;
 
     case MODE_READY:
-      lcd.setRGB(0, 255, 0);
+      lcd.setRGB(255, 255, 255);
       {
         char line1[17];
         snprintf(line1, sizeof(line1), "Ledger %c Ready", deviceId);
@@ -315,27 +578,30 @@ void enterMode(Mode m) {
       break;
 
     case MODE_SIGNING:
-      lcd.setRGB(255, 255, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShowPinProgress("Sign: Enter PIN", 0);
       signStartTime = millis();
       Serial.println("PIN_PROGRESS:0");
       break;
 
     case MODE_WIPED:
-      lcd.setRGB(255, 0, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShow("!! WIPED !!", "Recover via app");
       break;
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Challenge-response (kept from v3)
+// Challenge-response (SipHash-2-4 based)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 void generateNonce(uint8_t* nonce) {
-  unsigned long t = millis();
   for (uint8_t i = 0; i < 8; i++) {
-    nonce[i] = (uint8_t)((t >> ((i % 4) * 8)) ^ (i * 0x5A));
+    uint16_t a = analogRead(A0);
+    unsigned long u = micros();
+    unsigned long t = millis();
+    nonce[i] = (uint8_t)(a ^ (u >> (i % 4)) ^ (t >> ((i + 1) % 4)) ^ (i * 31) ^ (i << 3));
+    delayMicroseconds(37 + i * 3);
   }
 }
 
@@ -348,12 +614,14 @@ uint8_t hexCharToInt(char c) {
 
 bool verifyAuth(const String& hexResponse) {
   if (hexResponse.length() != 16) return false;
+  uint8_t expect[8];
+  uint64_t tag = cx_siphash24(gAuthKey, currentNonce, 8);
+  u64_to_le(tag, expect);
   for (uint8_t i = 0; i < 8; i++) {
     char hi = hexResponse.charAt(i * 2);
     char lo = hexResponse.charAt(i * 2 + 1);
     uint8_t val = (uint8_t)((hexCharToInt(hi) << 4) | hexCharToInt(lo));
-    uint8_t expected = currentNonce[i] ^ SECRET_KEY[i];
-    if (val != expected) return false;
+    if (val != expect[i]) return false;
   }
   return true;
 }
@@ -461,13 +729,16 @@ void finalizeSixDigitPin() {
     if (match) {
       savePin(pinBuf);
       Serial.println("PIN_OK");
-      lcd.setRGB(0, 255, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShow("PIN Saved!", "");
       delay(1500);
+      uint8_t saltAfter[8];
+      readSaltPlain(saltAfter);
+      rebuildAuthKey(gChipSig, saltAfter, deviceId);
       enterMode(MODE_READY);
     } else {
       Serial.println("PIN_MISMATCH");
-      lcd.setRGB(255, 0, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShow("PINs don't", "match! Retry...");
       delay(2000);
       enterMode(MODE_SET_PIN);
@@ -479,7 +750,7 @@ void finalizeSixDigitPin() {
       logConfirm();
       Serial.println("PIN_OK");
       Serial.println("CONFIRMED");
-      lcd.setRGB(0, 255, 0);
+      lcd.setRGB(255, 255, 255);
       lcdShow("TX Approved!", "");
       delay(2000);
       enterMode(MODE_READY);
@@ -491,20 +762,26 @@ void finalizeSixDigitPin() {
       if (fails >= MAX_PIN_FAILS) {
         wipeEEPROM();
         Serial.println("WIPED");
+        deviceId = DEFAULT_ID;
+        readDeviceSignature(gChipSig);
+        uint8_t salt[8];
+        readSaltPlain(salt);
+        deriveStorageKeysFromSigSalt(gChipSig, salt);
+        rebuildAuthKey(gChipSig, salt, deviceId);
         enterMode(MODE_WIPED);
       } else {
         uint8_t left = MAX_PIN_FAILS - fails;
         Serial.print("PIN_FAIL:");
         Serial.println(left);
 
-        lcd.setRGB(255, 0, 0);
+        lcd.setRGB(255, 255, 255);
         char msg[17];
         snprintf(msg, sizeof(msg), "Wrong! %d left", left);
         lcdShow("Bad PIN", msg);
         delay(2000);
 
         pinPos = 0;
-        lcd.setRGB(255, 255, 0);
+        lcd.setRGB(255, 255, 255);
         lcdShowPinProgress("Sign: Enter PIN", 0);
         Serial.println("PIN_PROGRESS:0");
       }
@@ -556,31 +833,57 @@ void readSerial() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 void handleCmd(const String& cmd) {
+  uint8_t salt[8];
+  readSaltPlain(salt);
 
   if (cmd == "PING") {
     Serial.println("PONG");
 
+  } else if (cmd == "META") {
+    printMetaLine(gChipSig, salt);
+
   } else if (cmd == "STATE") {
     printState();
 
-  } else if (cmd.startsWith("SETID ") && cmd.length() == 7) {
+  } else if (cmd.startsWith("SETID ")) {
+    if (cmd.length() != 7) {
+      Serial.println("ERR:BAD_ID");
+      return;
+    }
     char newId = cmd.charAt(6);
-    if (newId >= 'A' && newId <= 'Z') {
+    if (newId < 'A' || newId > 'Z') {
+      Serial.println("ERR:BAD_ID");
+      return;
+    }
+    char stored = (char)eepromRead(ADDR_DEVICE_ID);
+    if (isPinSet() && stored != newId) {
+      Serial.println("ERR:ID_LOCKED");
+      return;
+    }
+    if (isPinSet() && stored == newId) {
       deviceId = newId;
-      eepromWrite(ADDR_DEVICE_ID, (uint8_t)newId);
-      eepromWrite(ADDR_DEV_STATE, 1);  // REGISTERED
       Serial.println("ID_SAVED");
       Serial.print("DEVICE:");
       Serial.println(deviceId);
+      rebuildAuthKey(gChipSig, salt, deviceId);
+      return;
+    }
 
-      if (currentMode == MODE_INIT) {
-        char msg[17];
-        snprintf(msg, sizeof(msg), "Ledger %c", deviceId);
-        lcd.setRGB(0, 255, 0);
-        lcdShow(msg, "Registered!");
-        delay(1500);
-        enterMode(MODE_SET_PIN);
-      }
+    deviceId = newId;
+    eepromWrite(ADDR_DEVICE_ID, (uint8_t)newId);
+    eepromWrite(ADDR_DEV_STATE, 1);  // REGISTERED
+    Serial.println("ID_SAVED");
+    Serial.print("DEVICE:");
+    Serial.println(deviceId);
+    rebuildAuthKey(gChipSig, salt, deviceId);
+
+    if (currentMode == MODE_INIT) {
+      char msg[17];
+      snprintf(msg, sizeof(msg), "Ledger %c", deviceId);
+      lcd.setRGB(255, 255, 255);
+      lcdShow(msg, "Registered!");
+      delay(1500);
+      enterMode(MODE_SET_PIN);
     }
 
   } else if (cmd.startsWith("MODE ")) {
@@ -632,6 +935,10 @@ void handleCmd(const String& cmd) {
   } else if (cmd == "RECOVER") {
     wipeEEPROM();
     deviceId = DEFAULT_ID;
+    readDeviceSignature(gChipSig);
+    readSaltPlain(salt);
+    deriveStorageKeysFromSigSalt(gChipSig, salt);
+    rebuildAuthKey(gChipSig, salt, deviceId);
     Serial.println("RECOVERED");
     enterMode(MODE_INIT);
 
@@ -643,15 +950,19 @@ void handleCmd(const String& cmd) {
   } else if (cmd.startsWith("AUTH ")) {
     if (!nonceIssued) {
       Serial.println("AUTH_FAIL");
+      recordAuthFail();
       return;
     }
     nonceIssued = false;
     String response = cmd.substring(5);
     response.trim();
+    rebuildAuthKey(gChipSig, salt, deviceId);
     if (verifyAuth(response)) {
+      clearAuthFails();
       printStats();
     } else {
       Serial.println("AUTH_FAIL");
+      recordAuthFail();
     }
 
   } else if (cmd == "RESET_STATS") {
@@ -662,10 +973,15 @@ void handleCmd(const String& cmd) {
     if (currentMode == MODE_WIPED) {
       wipeEEPROM();
       deviceId = DEFAULT_ID;
+      readDeviceSignature(gChipSig);
+      readSaltPlain(salt);
+      deriveStorageKeysFromSigSalt(gChipSig, salt);
+      rebuildAuthKey(gChipSig, salt, deviceId);
       Serial.println("UNLOCKED");
       enterMode(MODE_INIT);
     } else {
       eepromWrite(ADDR_CONSEC_REJECTS, 0);
+      clearAuthFails();
       Serial.println("UNLOCKED");
       Serial.println("READY");
     }
@@ -685,10 +1001,18 @@ void setup() {
 
   initEEPROM();
 
+  readDeviceSignature(gChipSig);
+  uint8_t salt[8];
+  readSaltPlain(salt);
+  deriveStorageKeysFromSigSalt(gChipSig, salt);
+
   uint8_t storedId = eepromRead(ADDR_DEVICE_ID);
   if (storedId >= 'A' && storedId <= 'Z') {
     deviceId = (char)storedId;
   }
+
+  rebuildAuthKey(gChipSig, salt, deviceId);
+  printMetaLine(gChipSig, salt);
 
   Serial.print("DEVICE:");
   Serial.println(deviceId);
@@ -713,9 +1037,56 @@ void setup() {
 void loop() {
   readSerial();
 
+  static unsigned long signBothHoldStart = 0;
+  static uint8_t       signHoldLastSec   = 255;
+
+  bool signingBothHeld =
+      currentMode == MODE_SIGNING &&
+      (digitalRead(PIN_BTN1) == HIGH) &&
+      (digitalRead(PIN_BTN2) == HIGH);
+
+  if (currentMode == MODE_SIGNING) {
+    unsigned long now = millis();
+    if (signingBothHeld) {
+      if (signBothHoldStart == 0) {
+        signBothHoldStart = now;
+        signHoldLastSec   = 255;
+      }
+      unsigned long held = now - signBothHoldStart;
+      if (held >= SIGN_HOLD_CANCEL_MS) {
+        signBothHoldStart = 0;
+        signHoldLastSec   = 255;
+        Serial.println("REJECTED");
+        lcd.setRGB(255, 255, 255);
+        lcdShow("Cancelled", "TX not signed");
+        delay(1200);
+        enterMode(MODE_READY);
+      } else {
+        uint8_t remain = (uint8_t)((SIGN_HOLD_CANCEL_MS - held + 999UL) / 1000UL);
+        if (remain != signHoldLastSec) {
+          signHoldLastSec = remain;
+          lcd.setRGB(255, 255, 255);
+          char line2[17];
+          snprintf(line2, sizeof(line2), "hold %us...", remain);
+          lcdShow("Cancel signing?", line2);
+        }
+      }
+    } else {
+      if (signBothHoldStart != 0) {
+        signBothHoldStart = 0;
+        signHoldLastSec   = 255;
+        lcd.setRGB(255, 255, 255);
+        lcdShowPinProgress("Sign: Enter PIN", pinPos);
+      }
+    }
+  } else {
+    signBothHoldStart = 0;
+    signHoldLastSec   = 255;
+  }
+
   if (currentMode == MODE_SET_PIN ||
       currentMode == MODE_CONFIRM_PIN ||
-      currentMode == MODE_SIGNING) {
+      (currentMode == MODE_SIGNING && !signingBothHeld)) {
     uint8_t btn = readButtons();
     handlePinButton(btn);
   }

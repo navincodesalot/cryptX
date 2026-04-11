@@ -259,6 +259,8 @@ function processSerialLine(
     }));
   } else if (line === "PIN_MISMATCH") {
     setState((p) => ({ ...p, pinProgress: 0 }));
+  } else if (line === "REJECTED") {
+    setState((p) => ({ ...p, pinProgress: 0 }));
   } else if (line.startsWith("DEVICE:")) {
     setState((p) => ({ ...p, deviceId: line.slice(7) }));
   }
@@ -559,8 +561,12 @@ export default function HomePage() {
           );
           return;
         }
-        if (result === "REJECTED" || result === "timeout") {
-          toast.error(`Transaction cancelled or timed out`);
+        if (result === "REJECTED") {
+          toast.error("Transaction cancelled on device");
+          return;
+        }
+        if (result === "timeout") {
+          toast.error("Transaction timed out waiting for PIN");
           return;
         }
         if (result.startsWith("ERR:")) {
@@ -999,7 +1005,8 @@ function LedgerCard({
               Signing Transaction
             </p>
             <p className="text-muted-foreground text-xs">
-              Enter your PIN on the device
+              Enter your PIN with the two buttons. Hold both at once for 5
+              seconds to cancel.
             </p>
             <PinDots filled={hwState.pinProgress} />
             {hwState.pinFails > 0 && (
