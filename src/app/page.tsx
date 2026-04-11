@@ -29,14 +29,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import {
   Table,
@@ -959,21 +951,21 @@ export default function HomePage() {
       </div>
 
       {/* ── Seed Phrase Backup Modal ─────────────────────────────────── */}
-      <Dialog
-        open={seedBackupModal !== null}
-        onOpenChange={() => {}}
-      >
-        <DialogContent className="sm:max-w-lg" showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Backup Your Seed Phrase</DialogTitle>
-            <DialogDescription>
-              Write these 12 words down in order. You will need them to
-              recover your wallet. Never share them with anyone.
-            </DialogDescription>
-          </DialogHeader>
+      {seedBackupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
+          <div className="bg-popover relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-foreground/10">
+            <div className="flex flex-col gap-1">
+              <h2 className="font-heading text-base font-medium leading-none">
+                Backup Your Seed Phrase
+              </h2>
+              <p className="text-muted-foreground text-sm">
+                Write these 12 words down in order. You will need them to
+                recover your wallet. Never share them with anyone.
+              </p>
+            </div>
 
-          {seedBackupModal && (
-            <div className="grid grid-cols-3 gap-2 py-4">
+            <div className="grid grid-cols-3 gap-2">
               {seedBackupModal.words.map((word, i) => (
                 <div
                   key={i}
@@ -988,18 +980,16 @@ export default function HomePage() {
                 </div>
               ))}
             </div>
-          )}
 
-          <div className="bg-amber-500/10 flex items-start gap-2 rounded-lg p-3">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-            <p className="text-xs text-amber-500">
-              This is the only time your seed phrase will be shown. Store it
-              securely — you cannot view it again.
-            </p>
-          </div>
+            <div className="bg-amber-500/10 flex items-start gap-2 rounded-lg p-3">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <p className="text-xs text-amber-500">
+                This is the only time your seed phrase will be shown. Store it
+                securely — you cannot view it again.
+              </p>
+            </div>
 
-          <DialogFooter className="flex-col gap-2 sm:flex-col">
-            {seedBackupModal && (
+            <div className="flex flex-col gap-2">
               <Button
                 variant="outline"
                 className="w-full"
@@ -1019,73 +1009,77 @@ export default function HomePage() {
                 <Download className="mr-2 size-4" />
                 Download as .txt
               </Button>
-            )}
-            <Button
-              className="w-full"
-              onClick={() => {
-                setSeedBackupModal(null);
-                toast.success(
-                  `Registered as Ledger ${seedBackupModal?.ledger} — now set your PIN`,
-                );
-              }}
-            >
-              I&apos;ve Written It Down
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <Button
+                className="w-full"
+                onClick={() => {
+                  const ledger = seedBackupModal.ledger;
+                  setSeedBackupModal(null);
+                  toast.success(
+                    `Registered as Ledger ${ledger} — now set your PIN`,
+                  );
+                }}
+              >
+                I&apos;ve Written It Down
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Seed Phrase Recovery Modal ────────────────────────────────── */}
-      <Dialog
-        open={recoverModal !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setRecoverModal(null);
-            setRecoverPhraseInput("");
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Enter Seed Phrase</DialogTitle>
-            <DialogDescription>
-              Enter the 12 words you saved when you registered Ledger{" "}
-              {recoverModal?.ledger}, separated by spaces.
-            </DialogDescription>
-          </DialogHeader>
-
-          <Textarea
-            placeholder="word1 word2 word3 …"
-            rows={4}
-            value={recoverPhraseInput}
-            onChange={(e) => setRecoverPhraseInput(e.target.value)}
-            className="font-mono text-sm"
+      {recoverModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="bg-background/80 fixed inset-0 backdrop-blur-sm"
+            onClick={() => {
+              setRecoverModal(null);
+              setRecoverPhraseInput("");
+            }}
           />
+          <div className="bg-popover relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-foreground/10">
+            <div className="flex flex-col gap-1">
+              <h2 className="font-heading text-base font-medium leading-none">
+                Enter Seed Phrase
+              </h2>
+              <p className="text-muted-foreground text-sm">
+                Enter the 12 words you saved when you registered Ledger{" "}
+                {recoverModal.ledger}, separated by spaces.
+              </p>
+            </div>
 
-          <DialogFooter className="flex-col gap-2 sm:flex-row">
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => {
-                setRecoverModal(null);
-                setRecoverPhraseInput("");
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="w-full"
-              disabled={
-                verifyingPhrase ||
-                recoverPhraseInput.trim().split(/\s+/).length !== 12
-              }
-              onClick={confirmRecover}
-            >
-              {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <Textarea
+              placeholder="word1 word2 word3 …"
+              rows={4}
+              value={recoverPhraseInput}
+              onChange={(e) => setRecoverPhraseInput(e.target.value)}
+              className="font-mono text-sm"
+            />
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => {
+                  setRecoverModal(null);
+                  setRecoverPhraseInput("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="w-full"
+                disabled={
+                  verifyingPhrase ||
+                  recoverPhraseInput.trim().split(/\s+/).length !== 12
+                }
+                onClick={confirmRecover}
+              >
+                {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
