@@ -206,15 +206,23 @@ function processSerialLine(
   if (line.startsWith("STATE:")) {
     const parts = line.slice(6).split(",");
     if (parts.length >= 4) {
+      const mode = parts[0] ?? "UNKNOWN";
+      const deviceId = parts[1] ?? "?";
+      const pinSet = (parts[2] ?? "0") === "1";
+      const pinFails = parseInt(parts[3] ?? "0", 10) || 0;
       setState((p) => ({
         ...p,
-        mode: parts[0],
-        deviceId: parts[1],
-        pinSet: parts[2] === "1",
-        pinFails: parseInt(parts[3], 10) || 0,
+        mode,
+        deviceId,
+        pinSet,
+        pinFails,
       }));
     } else if (parts.length === 1) {
-      setState((p) => ({ ...p, mode: parts[0], pinProgress: 0 }));
+      setState((p) => ({
+        ...p,
+        mode: parts[0] ?? "UNKNOWN",
+        pinProgress: 0,
+      }));
     }
   } else if (line.startsWith("PIN_PROGRESS:")) {
     setState((p) => ({
@@ -384,9 +392,9 @@ export default function HomePage() {
       if (stateLine) {
         const parts = stateLine.slice(6).split(",");
         if (parts.length >= 4) {
-          mode = parts[0];
-          pinSet = parts[2] === "1";
-          pinFails = parseInt(parts[3], 10) || 0;
+          mode = parts[0] ?? "UNKNOWN";
+          pinSet = (parts[2] ?? "0") === "1";
+          pinFails = parseInt(parts[3] ?? "0", 10) || 0;
         }
       }
 
