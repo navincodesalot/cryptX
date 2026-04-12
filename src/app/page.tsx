@@ -12,10 +12,12 @@ import {
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
+const POST_LOGIN = "/dashboard";
+
 export default async function LandingPage() {
   const session = await auth0.getSession();
   if (session) {
-    redirect("/dashboard");
+    redirect(POST_LOGIN);
   }
 
   return (
@@ -31,13 +33,13 @@ export default async function LandingPage() {
               crypt<span className="text-primary">X</span>
             </h1>
             <p className="text-muted-foreground max-w-xl text-lg">
-              DIY hardware wallet network on Solana. Sign in with Auth0, then open
-              the dashboard at the home page.
+              DIY hardware wallet network on Solana. Sign in with Auth0, then
+              continue to the dashboard.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <a
-              href="/auth/login?screen_hint=signup&returnTo=/"
+              href={`/auth/login?screen_hint=signup&returnTo=${encodeURIComponent(POST_LOGIN)}`}
               className={cn(
                 buttonVariants({ size: "lg" }),
                 "inline-flex w-full justify-center sm:w-auto",
@@ -46,7 +48,7 @@ export default async function LandingPage() {
               Create account
             </a>
             <a
-              href="/auth/login?returnTo=/"
+              href={`/auth/login?returnTo=${encodeURIComponent(POST_LOGIN)}`}
               className={cn(
                 buttonVariants({ variant: "outline", size: "lg" }),
                 "inline-flex w-full justify-center sm:w-auto",
@@ -77,8 +79,9 @@ export default async function LandingPage() {
                 Dashboard
               </CardTitle>
               <CardDescription>
-                The main app lives at <span className="font-mono">/</span> — the
-                same experience before and after you authenticate.
+                After you sign in, you land on{" "}
+                <span className="font-mono">/dashboard</span> to manage wallets
+                and transfers.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -97,8 +100,11 @@ export default async function LandingPage() {
         </section>
 
         <footer className="text-muted-foreground mt-16 flex flex-col items-center gap-3 text-center text-sm sm:flex-row sm:justify-center sm:gap-6">
-          <a href="/" className="text-primary underline-offset-4 hover:underline">
-            Open dashboard (home)
+          <a
+            href="/dashboard"
+            className="text-primary underline-offset-4 hover:underline"
+          >
+            Open dashboard
           </a>
           <span className="hidden sm:inline">·</span>
           <a

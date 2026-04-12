@@ -12,6 +12,7 @@ import {
   Droplets,
   ExternalLink,
   KeyRound,
+  LogOut,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
@@ -20,7 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -955,6 +956,16 @@ export default function HomePage() {
                 )}
               />
             </Button>
+            <a
+              href="/auth/logout"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "inline-flex gap-1.5",
+              )}
+            >
+              <LogOut className="size-3.5" />
+              Log out
+            </a>
           </div>
         </header>
 
