@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowRightLeft,
+  BarChart2,
   CheckCircle2,
   CircleDashed,
   Cpu,
@@ -22,6 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
@@ -41,6 +43,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { BIP39_ENGLISH, phraseToIndices } from "@/lib/bip39Words";
+import { sendClientLedgerLog } from "@/lib/logging/clientLog";
 
 const HARDWARE_MODE =
   process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
@@ -147,6 +150,7 @@ class DeviceConnection {
   private buf = "";
   private waiters = new Set<LineWaiter>();
   onLine: ((line: string) => void) | null = null;
+  onDisconnect: (() => void) | null = null;
 
   constructor(port: SerialPort) {
     this.port = port;
@@ -181,7 +185,7 @@ class DeviceConnection {
         }
       }
     } catch {
-      /* port closed */
+      this.onDisconnect?.();
     }
   }
 
@@ -284,6 +288,8 @@ function parseSeedLinesToWords(buffer: string[]): string[] {
 function processSerialLine(
   line: string,
   setState: React.Dispatch<React.SetStateAction<HwState>>,
+  ledger: "A" | "B",
+  getHwState: () => HwState,
 ) {
   if (line.startsWith("STATE:")) {
     const parts = line.slice(6).split(",");
@@ -324,12 +330,34 @@ function processSerialLine(
     setState((p) => ({ ...p, pinFails: 0 }));
   } else if (line.startsWith("PIN_FAIL:")) {
     const left = parseInt(line.slice(9), 10) || 0;
+    const hw = getHwState();
+    if (hw.mode === "SIGNING") {
+      void sendClientLedgerLog(
+        {
+          deviceId: `ledger-${ledger}-${hw.deviceId}`,
+          action: "AUTH_FAIL",
+          status: "FAIL",
+          metadata: { reason: "wrong_pin", attemptsLeft: left },
+        },
+        { usbConnected: true },
+      );
+    }
     setState((p) => ({
       ...p,
       pinFails: 3 - left,
       pinProgress: 0,
     }));
   } else if (line === "WIPED") {
+    const hw = getHwState();
+    void sendClientLedgerLog(
+      {
+        deviceId: `ledger-${ledger}-${hw.deviceId}`,
+        action: "SIGN_TX",
+        status: "FAIL",
+        metadata: { reason: "device_wiped" },
+      },
+      { usbConnected: true },
+    );
     setState((p) => ({
       ...p,
       mode: "WIPED",
@@ -348,7 +376,6 @@ function processSerialLine(
       signExpiresAt: null,
     }));
   } else if (line.startsWith("SIGN_CANCEL:")) {
-    // "SIGN_CANCEL:" is 12 chars; digit(s) start at index 12 (slice(11) was ":5" → NaN)
     const n = Number.parseInt(line.slice(12).trim(), 10);
     if (n >= 1 && n <= 5) {
       setState((p) => ({ ...p, signCancelHold: n }));
@@ -426,6 +453,12 @@ export default function HomePage() {
   } | null>(null);
   const [recoverPhraseInput, setRecoverPhraseInput] = useState("");
   const [verifyingPhrase, setVerifyingPhrase] = useState(false);
+  const [blacklistedDevice, setBlacklistedDevice] = useState<{
+    ledger: "A" | "B";
+    reason: string;
+  } | null>(null);
+  const [sendAmountA, setSendAmountA] = useState("0.01");
+  const [sendAmountB, setSendAmountB] = useState("0.01");
 
   const deviceARef = useRef<DeviceConnection | null>(null);
   const deviceBRef = useRef<DeviceConnection | null>(null);
@@ -503,8 +536,11 @@ export default function HomePage() {
   /* ── Hardware connect ──────────────────────────────────────────────────── */
   const connectHardware = async (ledger: "A" | "B") => {
     setConnectingHw(ledger);
+    setBlacklistedDevice(null);
     const setState = ledger === "A" ? setHwStateA : setHwStateB;
     const deviceRef = ledger === "A" ? deviceARef : deviceBRef;
+    /** True after `port.open` — required for MongoDB ledger log eligibility. */
+    let usbSession = false;
 
     try {
       if (!navigator.serial)
@@ -512,6 +548,18 @@ export default function HomePage() {
 
       // Close existing connection if any
       if (deviceRef.current) {
+        const prev = ledger === "A" ? hwStateA : hwStateB;
+        if (prev.connected) {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${ledger}-${prev.deviceId}`,
+              action: "DISCONNECT",
+              status: "SUCCESS",
+              metadata: { reason: "reconnect_replace" },
+            },
+            { usbConnected: true },
+          );
+        }
         await deviceRef.current.close();
         deviceRef.current = null;
         setState(INITIAL_HW);
@@ -519,9 +567,11 @@ export default function HomePage() {
 
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
+      usbSession = true;
 
       const device = new DeviceConnection(port);
-      device.onLine = (line) => processSerialLine(line, setState);
+      const getHw = () => (ledger === "A" ? hwStateA : hwStateB);
+      device.onLine = (line) => processSerialLine(line, setState, ledger, getHw);
       await device.start();
 
       // Wait for greeting
@@ -560,6 +610,19 @@ export default function HomePage() {
         mode !== "INIT" &&
         mode !== "WIPED"
       ) {
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${ledger}-${detectedId}`,
+            action: "CONNECT",
+            status: "FAIL",
+            metadata: {
+              reason: "wrong_ledger",
+              expectedSlot: ledger,
+              reportedId: detectedId,
+            },
+          },
+          { usbConnected: true },
+        );
         await device.close();
         toast.error(
           `This device is Ledger ${detectedId}, not Ledger ${ledger}. Connect the correct device.`,
@@ -567,7 +630,41 @@ export default function HomePage() {
         return;
       }
 
+      const blCheck = await fetch(
+        `/api/security/blacklist/check?deviceId=ledger-${ledger}-${stateDeviceId}`,
+      );
+      const blData = (await blCheck.json()) as {
+        blacklisted: boolean;
+        reason?: string;
+      };
+      if (blData.blacklisted) {
+        await device.close();
+        setBlacklistedDevice({
+          ledger,
+          reason: blData.reason ?? "Blocked by security policy",
+        });
+        return;
+      }
+
+      setBlacklistedDevice(null);
+
       deviceRef.current = device;
+
+      device.onDisconnect = () => {
+        const getHw = ledger === "A" ? hwStateA : hwStateB;
+        const duringSigning = getHw.signExpiresAt != null && getHw.signExpiresAt > Date.now();
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${ledger}-${stateDeviceId}`,
+            action: "DISCONNECT",
+            status: "FAIL",
+            metadata: { reason: "port_closed", during_signing: duringSigning },
+          },
+          { usbConnected: false },
+        );
+        setState(INITIAL_HW);
+      };
+
       setState({
         connected: true,
         mode,
@@ -581,10 +678,31 @@ export default function HomePage() {
         signExpiresAt: null,
       });
 
+      void sendClientLedgerLog(
+        {
+          deviceId: `ledger-${ledger}-${stateDeviceId}`,
+          action: "CONNECT",
+          status: "SUCCESS",
+          metadata: { mode, baudRate: 115200 },
+        },
+        { usbConnected: true },
+      );
+
       toast.success(`Ledger ${ledger} connected — ${mode}`);
     } catch (err) {
       const name = err instanceof Error ? err.name : "";
       if (name !== "NotFoundError") {
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${ledger}-unknown`,
+            action: "CONNECT",
+            status: "FAIL",
+            metadata: {
+              error: err instanceof Error ? err.message : "Failed to connect",
+            },
+          },
+          { usbConnected: usbSession },
+        );
         toast.error(
           err instanceof Error ? err.message : "Failed to connect",
         );
@@ -769,6 +887,16 @@ export default function HomePage() {
       await recoverP;
 
       const words = parseSeedLinesToWords(buf);
+      const hw = ledger === "A" ? hwStateA : hwStateB;
+      void sendClientLedgerLog(
+        {
+          deviceId: `ledger-${ledger}-${hw.deviceId}`,
+          action: "CONNECT",
+          status: "SUCCESS",
+          metadata: { recovered: true },
+        },
+        { usbConnected: true },
+      );
       setRecoverModal(null);
       setRecoverPhraseInput("");
       setSeedDownloaded(false);
@@ -818,7 +946,7 @@ export default function HomePage() {
   };
 
   /* ── Transfer (with hardware PIN flow) ──────────────────────────────────── */
-  const handleTransfer = async (from: "A" | "B") => {
+  const handleTransfer = async (from: "A" | "B", amount: number) => {
     setSendingFrom(from);
     try {
       if (HARDWARE_MODE) {
@@ -859,33 +987,88 @@ export default function HomePage() {
         toast.dismiss("hw-confirm");
 
         if (result === "WIPED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "device_wiped" },
+            },
+            { usbConnected: true },
+          );
           toast.error(
             `Ledger ${from} was wiped after 3 wrong PINs! Use Recover to re-setup.`,
           );
           return;
         }
         if (result === "REJECTED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "CANCELLED",
+              metadata: { reason: "cancelled_on_device" },
+            },
+            { usbConnected: true },
+          );
           toast.error("Transaction cancelled on device");
           return;
         }
         if (result === "timeout") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "pin_timeout" },
+            },
+            { usbConnected: true },
+          );
           toast.error("Transaction timed out waiting for PIN");
           return;
         }
         if (result.startsWith("ERR:")) {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "device_error", detail: result },
+            },
+            { usbConnected: true },
+          );
           toast.error(result);
           return;
         }
         if (result !== "CONFIRMED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "unexpected", detail: result },
+            },
+            { usbConnected: true },
+          );
           toast.error(`Unexpected: ${result}`);
           return;
         }
+
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${from}-${hw.deviceId}`,
+            action: "SIGN_TX",
+            status: "SUCCESS",
+            metadata: { amount, asset: "SOL", cluster: "testnet" },
+          },
+          { usbConnected: true },
+        );
       }
 
       const res = await fetch("/api/transfer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from, amount: 0.01 }),
+        body: JSON.stringify({ from, amount }),
       });
       const data = (await res.json()) as ApiResponse;
 
@@ -894,7 +1077,7 @@ export default function HomePage() {
         return;
       }
 
-      toast.success(`Sent 0.01 SOL from Ledger ${from}`, {
+      toast.success(`Sent ${amount} SOL from Ledger ${from}`, {
         description: (
           <a
             href={`https://explorer.solana.com/tx/${data.signature}?cluster=testnet`}
@@ -962,6 +1145,13 @@ export default function HomePage() {
                 buttonVariants({ variant: "outline", size: "sm" }),
                 "inline-flex gap-1.5",
               )}
+              onClick={() => {
+                void fetch("/api/session/log", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ event: "logout" }),
+                });
+              }}
             >
               <LogOut className="size-3.5" />
               Log out
@@ -998,7 +1188,10 @@ export default function HomePage() {
             awaitingHardware={awaitingHw === "A"}
             connectingHardware={connectingHw === "A"}
             hasSerial={hasSerial}
-            onSend={() => handleTransfer("A")}
+            isBlacklisted={blacklistedDevice?.ledger === "A"}
+            sendAmount={sendAmountA}
+            setSendAmount={setSendAmountA}
+            onSend={(amount) => handleTransfer("A", amount)}
             onAirdrop={() => handleAirdrop("A")}
             onConnect={() => connectHardware("A")}
             onRegister={() => registerDevice("A")}
@@ -1017,7 +1210,10 @@ export default function HomePage() {
             awaitingHardware={awaitingHw === "B"}
             connectingHardware={connectingHw === "B"}
             hasSerial={hasSerial}
-            onSend={() => handleTransfer("B")}
+            isBlacklisted={blacklistedDevice?.ledger === "B"}
+            sendAmount={sendAmountB}
+            setSendAmount={setSendAmountB}
+            onSend={(amount) => handleTransfer("B", amount)}
             onAirdrop={() => handleAirdrop("B")}
             onConnect={() => connectHardware("B")}
             onRegister={() => registerDevice("B")}
@@ -1249,6 +1445,70 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {/* ── Blacklisted Device Modal ─────────────────────────────────── */}
+      {blacklistedDevice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
+          <div className="bg-popover relative z-10 flex w-full max-w-md flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-destructive/40">
+            <div className="flex items-center gap-3">
+              <ShieldAlert className="text-destructive size-6 shrink-0" />
+              <h2 className="text-base font-semibold">Device Blocked</h2>
+            </div>
+            <p className="text-muted-foreground text-sm">
+              Ledger {blacklistedDevice.ledger} has been flagged and is no
+              longer permitted to use this platform.
+            </p>
+            <p className="text-muted-foreground text-xs">
+              Reason: {blacklistedDevice.reason}
+            </p>
+            <div className="bg-muted space-y-1 rounded-lg p-4 text-sm">
+              <p className="font-medium">Contact Support</p>
+              <p className="text-muted-foreground">
+                Email: support@cryptx.dev
+              </p>
+              <p className="text-muted-foreground">
+                Discord: discord.gg/cryptx
+              </p>
+              <p className="text-muted-foreground">
+                Reference ID: {blacklistedDevice.ledger}-blocked
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full sm:flex-1"
+                onClick={() => setBlacklistedDevice(null)}
+              >
+                Try again
+              </Button>
+              <a
+                href="/auth/logout"
+                className={cn(
+                  buttonVariants({ variant: "outline" }),
+                  "inline-flex w-full flex-1 gap-1.5 sm:w-auto",
+                )}
+                onClick={() => {
+                  void fetch("/api/session/log", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ event: "logout" }),
+                  });
+                }}
+              >
+                <LogOut className="mr-2 size-3.5" />
+                Log out
+              </a>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              If support removed your device from the block list, tap Try again
+              and connect your Arduino again — the port opens as soon as the
+              check passes.
+            </p>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -1268,6 +1528,9 @@ function LedgerCard({
   awaitingHardware,
   connectingHardware,
   hasSerial,
+  isBlacklisted,
+  sendAmount,
+  setSendAmount,
   onSend,
   onAirdrop,
   onConnect,
@@ -1286,7 +1549,10 @@ function LedgerCard({
   awaitingHardware: boolean;
   connectingHardware: boolean;
   hasSerial: boolean;
-  onSend: () => void;
+  isBlacklisted: boolean;
+  sendAmount: string;
+  setSendAmount: (v: string) => void;
+  onSend: (amount: number) => void;
   onAirdrop: () => void;
   onConnect: () => void;
   onRegister: () => void;
@@ -1312,12 +1578,20 @@ function LedgerCard({
   const showSetupFlow =
     hardwareMode && hwState.connected && (isSetup || isWiped);
 
-  let sendLabel = "Send 0.01 SOL";
+  const parsedAmount = parseFloat(sendAmount);
+  const amountValid =
+    !Number.isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount <= (wallet?.balance ?? 0);
+  const amountOverBalance =
+    !Number.isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount > (wallet?.balance ?? 0);
+
+  let sendLabel = `Send ${amountValid ? parsedAmount : "—"} SOL`;
   if (awaitingHardware) sendLabel = "Enter PIN on device…";
   else if (sendingNow) sendLabel = "Sending…";
 
   const sendDisabled =
     busy ||
+    isBlacklisted ||
+    !amountValid ||
     (hardwareMode && (!hwState.connected || !isReady));
 
   return (
@@ -1488,10 +1762,46 @@ function LedgerCard({
       </CardContent>
 
       <CardFooter className="flex flex-col gap-2">
-        {/* Send / Airdrop always shown (disabled if hardware not ready) */}
+        {isBlacklisted && (
+          <div className="bg-destructive/10 flex w-full items-center gap-2 rounded-lg px-3 py-2">
+            <ShieldAlert className="text-destructive size-4 shrink-0" />
+            <p className="text-destructive text-xs font-medium">
+              Device Blocked
+            </p>
+          </div>
+        )}
+
+        {/* Amount input */}
+        <div className="flex w-full items-center gap-2">
+          <Input
+            type="number"
+            step="any"
+            min="0"
+            placeholder="Amount"
+            value={sendAmount}
+            onChange={(e) => setSendAmount(e.target.value)}
+            className="flex-1 font-mono text-sm tabular-nums"
+            disabled={isBlacklisted}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 font-mono text-xs"
+            onClick={() => setSendAmount("0.01")}
+            disabled={isBlacklisted}
+          >
+            0.01
+          </Button>
+        </div>
+        {amountOverBalance && (
+          <p className="text-destructive w-full text-xs">
+            Exceeds balance ({wallet?.balance.toFixed(4)} SOL)
+          </p>
+        )}
+
         <Button
           className="w-full"
-          onClick={onSend}
+          onClick={() => onSend(parsedAmount)}
           disabled={sendDisabled}
         >
           <ArrowRightLeft className="mr-2 size-4" />
@@ -1502,36 +1812,51 @@ function LedgerCard({
           variant="outline"
           className="w-full"
           onClick={onAirdrop}
-          disabled={busy}
+          disabled={busy || isBlacklisted}
         >
           <Droplets className="mr-2 size-4" />
           {airdropping ? "Requesting…" : "Airdrop 1 SOL"}
         </Button>
 
-        {/* Connect button */}
-        {hasSerial && hardwareMode && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "w-full gap-2 text-xs",
-              hwState.connected &&
-                isReady &&
-                "text-emerald-400 hover:text-emerald-300",
-            )}
-            onClick={onConnect}
-            disabled={busy || connectingHardware}
-          >
-            <Usb className="size-3" />
-            {connectingHardware
-              ? "Connecting…"
-              : hwState.connected
-                ? isReady
-                  ? "Connected"
-                  : `Connected — ${hwState.mode}`
-                : "Connect Arduino"}
-          </Button>
-        )}
+        {/* Connect + Insights row */}
+        <div className="flex w-full gap-2">
+          {hasSerial && hardwareMode && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "flex-1 gap-2 text-xs",
+                hwState.connected &&
+                  isReady &&
+                  "text-emerald-400 hover:text-emerald-300",
+              )}
+              onClick={onConnect}
+              disabled={busy || connectingHardware || isBlacklisted}
+            >
+              <Usb className="size-3" />
+              {connectingHardware
+                ? "Connecting…"
+                : hwState.connected
+                  ? isReady
+                    ? "Connected"
+                    : `Connected — ${hwState.mode}`
+                  : "Connect Arduino"}
+            </Button>
+          )}
+
+          {hwState.connected && (
+            <a
+              href={`/dashboard/insights?deviceId=ledger-${index}-${hwState.deviceId}`}
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "sm" }),
+                "gap-1.5 text-xs",
+              )}
+            >
+              <BarChart2 className="size-3" />
+              Insights
+            </a>
+          )}
+        </div>
       </CardFooter>
     </Card>
   );
