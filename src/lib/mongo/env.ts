@@ -16,18 +16,18 @@ export function getMongoDbName(): string {
 
 /**
  * Batched ledger log flush delay (ms). Random uniform in [min, max] to spread writes.
- * Defaults: 60_000–120_000 (1–2 minutes).
+ * Defaults: 30_000–30_000 (30 seconds).
  */
 export function getLedgerLogFlushMinMs(): number {
   const raw = process.env.LEDGER_LOG_FLUSH_MIN_MS?.trim();
-  const n = raw ? Number(raw) : 60_000;
-  return Number.isFinite(n) && n >= 5_000 ? Math.floor(n) : 60_000;
+  const n = raw ? Number(raw) : 30_000;
+  return Number.isFinite(n) && n >= 5_000 ? Math.floor(n) : 30_000;
 }
 
 export function getLedgerLogFlushMaxMs(): number {
   const raw = process.env.LEDGER_LOG_FLUSH_MAX_MS?.trim();
-  const n = raw ? Number(raw) : 120_000;
-  return Number.isFinite(n) && n >= 5_000 ? Math.floor(n) : 120_000;
+  const n = raw ? Number(raw) : 30_000;
+  return Number.isFinite(n) && n >= 5_000 ? Math.floor(n) : 30_000;
 }
 
 /** Call after reading env; ensures min <= max. */
