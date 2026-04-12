@@ -10,7 +10,6 @@ import {
   CircleDashed,
   Cpu,
   Download,
-  Droplets,
   ExternalLink,
   KeyRound,
   LogOut,
@@ -436,7 +435,6 @@ export default function HomePage() {
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [sendingFrom, setSendingFrom] = useState<"A" | "B" | null>(null);
-  const [airdropping, setAirdropping] = useState<"A" | "B" | null>(null);
   const [awaitingHw, setAwaitingHw] = useState<"A" | "B" | null>(null);
   const [connectingHw, setConnectingHw] = useState<"A" | "B" | null>(null);
 
@@ -911,40 +909,6 @@ export default function HomePage() {
     }
   };
 
-  /* ── Airdrop ───────────────────────────────────────────────────────────── */
-  const handleAirdrop = async (wallet: "A" | "B") => {
-    setAirdropping(wallet);
-    try {
-      const res = await fetch("/api/airdrop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet }),
-      });
-      const data = (await res.json()) as ApiResponse;
-      if (!res.ok || data.error) {
-        toast.error(data.error ?? "Airdrop failed");
-        return;
-      }
-      toast.success(`Airdropped 1 SOL to Ledger ${wallet}`, {
-        description: (
-          <a
-            href={`https://explorer.solana.com/tx/${data.signature}?cluster=testnet`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline"
-          >
-            View on Explorer
-          </a>
-        ),
-      });
-      await fetchBalances();
-    } catch {
-      toast.error("Network error during airdrop");
-    } finally {
-      setAirdropping(null);
-    }
-  };
-
   /* ── Transfer (with hardware PIN flow) ──────────────────────────────────── */
   const handleTransfer = async (from: "A" | "B", amount: number) => {
     setSendingFrom(from);
@@ -1184,7 +1148,6 @@ export default function HomePage() {
             hwState={hwStateA}
             hardwareMode={HARDWARE_MODE}
             sendingNow={sendingFrom === "A"}
-            airdropping={airdropping === "A"}
             awaitingHardware={awaitingHw === "A"}
             connectingHardware={connectingHw === "A"}
             hasSerial={hasSerial}
@@ -1192,7 +1155,6 @@ export default function HomePage() {
             sendAmount={sendAmountA}
             setSendAmount={setSendAmountA}
             onSend={(amount) => handleTransfer("A", amount)}
-            onAirdrop={() => handleAirdrop("A")}
             onConnect={() => connectHardware("A")}
             onRegister={() => registerDevice("A")}
             onResumePin={() => resumePinSetup("A")}
@@ -1206,7 +1168,6 @@ export default function HomePage() {
             hwState={hwStateB}
             hardwareMode={HARDWARE_MODE}
             sendingNow={sendingFrom === "B"}
-            airdropping={airdropping === "B"}
             awaitingHardware={awaitingHw === "B"}
             connectingHardware={connectingHw === "B"}
             hasSerial={hasSerial}
@@ -1214,7 +1175,6 @@ export default function HomePage() {
             sendAmount={sendAmountB}
             setSendAmount={setSendAmountB}
             onSend={(amount) => handleTransfer("B", amount)}
-            onAirdrop={() => handleAirdrop("B")}
             onConnect={() => connectHardware("B")}
             onRegister={() => registerDevice("B")}
             onResumePin={() => resumePinSetup("B")}
@@ -1245,8 +1205,7 @@ export default function HomePage() {
           {txHistory.length === 0 && !loadingHistory ? (
             <Card>
               <CardContent className="text-muted-foreground py-10 text-center text-sm">
-                No transactions yet. Airdrop some SOL and send a
-                transfer.
+                No transactions yet. Send a transfer once you have SOL.
               </CardContent>
             </Card>
           ) : (
@@ -1524,7 +1483,6 @@ function LedgerCard({
   hwState,
   hardwareMode,
   sendingNow,
-  airdropping,
   awaitingHardware,
   connectingHardware,
   hasSerial,
@@ -1532,7 +1490,6 @@ function LedgerCard({
   sendAmount,
   setSendAmount,
   onSend,
-  onAirdrop,
   onConnect,
   onRegister,
   onResumePin,
@@ -1545,7 +1502,6 @@ function LedgerCard({
   hwState: HwState;
   hardwareMode: boolean;
   sendingNow: boolean;
-  airdropping: boolean;
   awaitingHardware: boolean;
   connectingHardware: boolean;
   hasSerial: boolean;
@@ -1553,7 +1509,6 @@ function LedgerCard({
   sendAmount: string;
   setSendAmount: (v: string) => void;
   onSend: (amount: number) => void;
-  onAirdrop: () => void;
   onConnect: () => void;
   onRegister: () => void;
   onResumePin: () => void;
@@ -1562,7 +1517,6 @@ function LedgerCard({
   const short = wallet ? shortAddr(wallet.address) : "—";
   const busy =
     sendingNow ||
-    airdropping ||
     awaitingHardware ||
     loading ||
     connectingHardware;
@@ -1806,16 +1760,6 @@ function LedgerCard({
         >
           <ArrowRightLeft className="mr-2 size-4" />
           {sendLabel}
-        </Button>
-
-        <Button
-          variant="outline"
-          className="w-full"
-          onClick={onAirdrop}
-          disabled={busy || isBlacklisted}
-        >
-          <Droplets className="mr-2 size-4" />
-          {airdropping ? "Requesting…" : "Airdrop 1 SOL"}
         </Button>
 
         {/* Connect + Insights row */}

@@ -87,7 +87,7 @@ ${blacklistEntry ? `IMPORTANT: This device is currently BLACKLISTED. Reason: "${
 ${JSON.stringify(compactLogs, null, 0)}
 
 ## Legend
-- a = action: CONNECT, DISCONNECT, SIGN_TX, SEND_TX, AUTH_FAIL, AUTH_SUCCESS, MALICIOUS_ACTIVITY, BALANCE_FETCH, HISTORY_FETCH, AIRDROP, SESSION_LOGOUT
+- a = action: CONNECT, DISCONNECT, SIGN_TX, SEND_TX, AUTH_FAIL, AUTH_SUCCESS, MALICIOUS_ACTIVITY, BALANCE_FETCH, HISTORY_FETCH, SESSION_LOGOUT
 - s = status: SUCCESS, FAIL, CANCELLED
 - m = metadata (contains contextual info like reason, amounts, error details)
 

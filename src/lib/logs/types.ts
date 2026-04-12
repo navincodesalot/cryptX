@@ -11,7 +11,6 @@ export const LOG_ACTIONS = [
   "MALICIOUS_ACTIVITY",
   "BALANCE_FETCH",
   "HISTORY_FETCH",
-  "AIRDROP",
   "SESSION_LOGOUT",
 ] as const;
 
