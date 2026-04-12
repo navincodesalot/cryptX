@@ -109,11 +109,11 @@ function buildAuthMaterial(
   deviceId: string,
 ): Uint8Array {
   const buf = new Uint8Array(16);
-  buf[0] = sig3[0]! & 0xff;
-  buf[1] = sig3[1]! & 0xff;
-  buf[2] = sig3[2]! & 0xff;
+  buf[0] = sig3[0] & 0xff;
+  buf[1] = sig3[1] & 0xff;
+  buf[2] = sig3[2] & 0xff;
   buf.set(salt8.subarray(0, 8), 3);
-  buf[11] = deviceId.charCodeAt(0)! & 0xff;
+  buf[11] = deviceId.charCodeAt(0) & 0xff;
   buf[12] = 0x63;
   buf[13] = 0x72;
   buf[14] = 0x79;

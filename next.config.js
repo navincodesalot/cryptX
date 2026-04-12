@@ -5,7 +5,7 @@
 
 /** @type {import("next").NextConfig} */
 const config = {
-  async rewrites() {
+  rewrites() {
     return [
       { source: "/log", destination: "/api/log" },
       { source: "/logs", destination: "/api/logs" },

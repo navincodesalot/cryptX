@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  type ParsedTransactionWithMeta,
-} from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 
 import { safeIngestLedgerEvent } from "@/lib/logging/ingest";
 import { getConnection } from "@/lib/solana";
@@ -26,10 +22,10 @@ async function getHistory(pubkey: PublicKey, limit = 10): Promise<TxRecord[]> {
   const sigs = await connection.getSignaturesForAddress(pubkey, { limit });
   if (sigs.length === 0) return [];
 
-  const parsed = (await connection.getParsedTransactions(
+  const parsed = await connection.getParsedTransactions(
     sigs.map((s) => s.signature),
     { maxSupportedTransactionVersion: 0, commitment: "confirmed" },
-  )) as (ParsedTransactionWithMeta | null)[];
+  );
 
   const records: TxRecord[] = [];
 
@@ -48,19 +44,23 @@ async function getHistory(pubkey: PublicKey, limit = 10): Promise<TxRecord[]> {
 
     const instructions = tx.transaction.message.instructions;
     for (const ix of instructions) {
+      if (!("parsed" in ix) || ix.program !== "system") continue;
+      const raw: unknown = ix.parsed;
+      if (raw === null || typeof raw !== "object") continue;
+      const body = raw as Record<string, unknown>;
+      if (body.type !== "transfer") continue;
+      const infoVal = body.info;
+      if (infoVal === null || typeof infoVal !== "object") continue;
+      const info = infoVal as {
+        source: unknown;
+        destination: unknown;
+        lamports: unknown;
+      };
       if (
-        "parsed" in ix &&
-        ix.program === "system" &&
-        ix.parsed &&
-        typeof ix.parsed === "object" &&
-        "type" in ix.parsed &&
-        ix.parsed.type === "transfer"
+        typeof info.source === "string" &&
+        typeof info.destination === "string" &&
+        typeof info.lamports === "number"
       ) {
-        const info = (
-          ix.parsed as {
-            info: { source: string; destination: string; lamports: number };
-          }
-        ).info;
         from = info.source;
         to = info.destination;
         amount = info.lamports / LAMPORTS_PER_SOL;

@@ -21,20 +21,26 @@ export default async function LandingPage() {
   }
 
   return (
-    <main className="bg-background text-foreground min-h-screen">
+    <main className="relative min-h-screen bg-transparent text-foreground">
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-6 py-16 md:px-10 md:py-24">
         <header className="mb-16 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div className="space-y-3">
-            <Badge variant="outline" className="w-fit gap-1.5">
-              <span className="size-2 animate-pulse rounded-full bg-emerald-400" />
-              Solana testnet demo
+            <Badge
+              variant="outline"
+              className="w-fit gap-1.5 border-primary/30 bg-primary/10 text-foreground/85"
+            >
+              <span className="bg-primary size-2 animate-pulse rounded-full shadow-[0_0_10px_oklch(0.55_0.08_298/45%)]" />
+              Solana testnet
             </Badge>
-            <h1 className="text-4xl font-bold tracking-tight md:text-5xl">
-              crypt<span className="text-primary">X</span>
+            <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
+              crypt
+              <span className="from-primary via-primary/75 to-muted-foreground bg-linear-to-r bg-clip-text text-transparent">
+                X
+              </span>
             </h1>
             <p className="text-muted-foreground max-w-xl text-lg">
-              DIY hardware wallet network on Solana. Sign in with Auth0, then
-              continue to the dashboard.
+              Hardware wallet signing on Solana testnet. Sign in with Auth0 to
+              open your dashboard.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -60,7 +66,7 @@ export default async function LandingPage() {
         </header>
 
         <section className="grid flex-1 gap-6 md:grid-cols-3">
-          <Card>
+          <Card className="transition-transform duration-300 hover:-translate-y-0.5">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Shield className="text-primary size-4" />
@@ -72,7 +78,7 @@ export default async function LandingPage() {
               </CardDescription>
             </CardHeader>
           </Card>
-          <Card>
+          <Card className="transition-transform duration-300 hover:-translate-y-0.5">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Cpu className="text-primary size-4" />
@@ -85,7 +91,7 @@ export default async function LandingPage() {
               </CardDescription>
             </CardHeader>
           </Card>
-          <Card>
+          <Card className="transition-transform duration-300 hover:-translate-y-0.5">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Zap className="text-primary size-4" />

@@ -12,7 +12,7 @@
  * - Letter known but salt missing (legacy / META failure): `ledger-<A|B>-unscoped`
  */
 export function parseMetaSaltHex(metaLine: string): string | null {
-  const m = metaLine.match(/SALT=([0-9A-Fa-f]{16})/i);
+  const m = /SALT=([0-9A-Fa-f]{16})/i.exec(metaLine);
   return m?.[1]?.toLowerCase() ?? null;
 }
 

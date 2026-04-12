@@ -3,10 +3,10 @@ import {
   Connection,
   Keypair,
   LAMPORTS_PER_SOL,
-  PublicKey,
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
+import type { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 
 export function getConnection(): Connection {

@@ -10,7 +10,8 @@ export function getMongoUri(): string {
 }
 
 export function getMongoDbName(): string {
-  return process.env.MONGODB_DB_NAME?.trim() || "cryptx";
+  const n = process.env.MONGODB_DB_NAME?.trim();
+  return n ? n : "cryptx";
 }
 
 /**

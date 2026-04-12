@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
@@ -11,9 +11,10 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
+import { OrbitLoader } from "@/components/cosmic/orbit-loader";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -127,8 +128,8 @@ export default function InsightsPageWrapper() {
   return (
     <Suspense
       fallback={
-        <main className="bg-background text-foreground flex min-h-screen items-center justify-center">
-          <CircleDashed className="text-muted-foreground size-6 animate-spin" />
+        <main className="flex min-h-screen items-center justify-center bg-transparent text-foreground">
+          <OrbitLoader className="text-muted-foreground size-8" />
         </main>
       }
     >
@@ -149,7 +150,7 @@ function InsightsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!deviceId || !deviceId.startsWith("ledger-")) return;
+    if (!deviceId.startsWith("ledger-")) return;
 
     setLoadingAnalysis(true);
     setLoadingLogs(true);
@@ -170,11 +171,13 @@ function InsightsPage() {
     fetch(`/api/logs?deviceId=${encodeURIComponent(deviceId)}&limit=200`)
       .then((r) => r.json() as Promise<LogsResponse>)
       .then((data) => setLogs(data.logs ?? []))
-      .catch(() => {})
+      .catch(() => {
+        /* secondary fetch failure is non-fatal */
+      })
       .finally(() => setLoadingLogs(false));
   }, [deviceId]);
 
-  if (!deviceId || !deviceId.startsWith("ledger-")) {
+  if (!deviceId.startsWith("ledger-")) {
     return (
       <main className="bg-background text-foreground flex min-h-[60vh] items-center justify-center p-6">
         <Card className="max-w-md border-primary/20">
@@ -206,12 +209,12 @@ function InsightsPage() {
     : null;
 
   return (
-    <main className="bg-background text-foreground p-6 pb-12 md:p-10">
+    <main className="bg-transparent p-6 pb-12 text-foreground md:p-10">
       <div className="mx-auto max-w-4xl space-y-8">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
-              Device Insights
+            <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
+              Device insights
             </h1>
             <p className="text-muted-foreground font-mono text-xs break-all md:text-sm">
               {deviceId}
@@ -234,7 +237,7 @@ function InsightsPage() {
         {loadingAnalysis && (
           <Card>
             <CardContent className="flex items-center justify-center gap-3 py-12">
-              <CircleDashed className="text-muted-foreground size-5 animate-spin" />
+              <OrbitLoader className="text-muted-foreground size-5" />
               <p className="text-muted-foreground text-sm">
                 Analyzing device logs with Gemini...
               </p>
@@ -329,7 +332,7 @@ function InsightsPage() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Raw Logs</h2>
             {loadingLogs && (
-              <CircleDashed className="text-muted-foreground size-4 animate-spin" />
+              <OrbitLoader className="text-muted-foreground size-4" />
             )}
           </div>
 
@@ -395,15 +398,12 @@ function InsightsPage() {
 }
 
 function LogTimestamp({ iso }: { iso: string }) {
-  const [label, setLabel] = useState<string | null>(null);
-  useEffect(() => {
+  const label = useMemo(() => {
     const d = new Date(iso);
-    setLabel(
-      d.toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "medium",
-      }),
-    );
+    return d.toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "medium",
+    });
   }, [iso]);
-  return <span suppressHydrationWarning>{label ?? iso}</span>;
+  return <span suppressHydrationWarning>{label}</span>;
 }

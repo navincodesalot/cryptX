@@ -35,7 +35,7 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const deviceId = searchParams.get("deviceId") ?? "";
 
-    if (!deviceId || !deviceId.startsWith("ledger-")) {
+    if (!deviceId.startsWith("ledger-")) {
       return NextResponse.json(
         { error: "deviceId query param must start with 'ledger-'" },
         { status: 400 },

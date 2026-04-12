@@ -107,7 +107,7 @@ export async function getBufferThreatDeltas(
 
     for (const item of buf) {
       const d = item.doc;
-      const ingestion = d.metadata["ingestion"];
+      const ingestion = d.metadata.ingestion;
       const isServer = ingestion === "server";
       if (d.deviceId === deviceId && d.nonce === nonce) dupNonce = true;
 
@@ -167,7 +167,7 @@ export async function enqueueBufferedLog(
 
     const _id = new ObjectId();
     const item: QueuedLedger = { queuedAt: Date.now(), _id, doc };
-    if (!gl.__cryptxLedgerBuffer) gl.__cryptxLedgerBuffer = [];
+    gl.__cryptxLedgerBuffer ??= [];
     gl.__cryptxLedgerBuffer.push(item);
     scheduleFlush();
     return { id: _id.toHexString(), hash: doc.hash };

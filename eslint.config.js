@@ -1,45 +1,41 @@
-import { FlatCompat } from "@eslint/eslintrc";
-import tseslint from 'typescript-eslint';
-
-const compat = new FlatCompat({
-  baseDirectory: import.meta.dirname,
-});
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
+import tseslint from "typescript-eslint";
 
 export default tseslint.config(
+  ...nextCoreWebVitals,
+  ...tseslint.configs.recommendedTypeChecked,
   {
-		ignores: ['.next']
-	},
-  ...compat.extends("next/core-web-vitals"),
-  {
-    files: ['**/*.ts', '**/*.tsx'],
-		extends: [
-			...tseslint.configs.recommended,
-			...tseslint.configs.recommendedTypeChecked,
-			...tseslint.configs.stylisticTypeChecked
-		],
-      rules: {
-    "@typescript-eslint/array-type": "off",
-    "@typescript-eslint/consistent-type-definitions": "off",
-    "@typescript-eslint/consistent-type-imports": [
-      "warn",
-      { prefer: "type-imports", fixStyle: "inline-type-imports" },
-    ],
-    "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
-    "@typescript-eslint/require-await": "off",
-    "@typescript-eslint/no-misused-promises": [
-      "error",
-      { checksVoidReturn: { attributes: false } },
-    ],
+    files: ["**/*.ts", "**/*.tsx"],
+    rules: {
+      "@typescript-eslint/array-type": "off",
+      "@typescript-eslint/consistent-type-definitions": "off",
+      "@typescript-eslint/consistent-type-imports": [
+        "warn",
+        { prefer: "type-imports", fixStyle: "inline-type-imports" },
+      ],
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_" },
+      ],
+      "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/no-misused-promises": [
+        "error",
+        { checksVoidReturn: { attributes: false } },
+      ],
+      /** Legitimate data-fetch + derived UI state; flag is very noisy in client code. */
+      "react-hooks/set-state-in-effect": "off",
+      /** Countdown / live clocks need non-deterministic reads; interval-driven state is used where it matters. */
+      "react-hooks/purity": "off",
+    },
   },
-  },
   {
-		linterOptions: {
-			reportUnusedDisableDirectives: true
-		},
-		languageOptions: {
-			parserOptions: {
-				projectService: true
-			}
-		}
-	}
-)
+    linterOptions: {
+      reportUnusedDisableDirectives: true,
+    },
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+      },
+    },
+  },
+);

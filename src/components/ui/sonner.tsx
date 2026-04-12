@@ -1,7 +1,9 @@
 "use client"
 
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
+import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon } from "lucide-react"
+
+import { OrbitLoader } from "@/components/cosmic/orbit-loader"
 
 const Toaster = ({ ...props }: ToasterProps) => {
   return (
@@ -22,7 +24,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
           <OctagonXIcon className="size-4" />
         ),
         loading: (
-          <Loader2Icon className="size-4 animate-spin" />
+          <span className="inline-flex size-4 items-center justify-center">
+            <OrbitLoader className="size-4" />
+          </span>
         ),
       }}
       style={

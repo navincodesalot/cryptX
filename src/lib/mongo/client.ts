@@ -7,7 +7,6 @@ import { getMongoDbName, getMongoUri } from "./env";
  * per dev server / serverless instance (see MongoDB Node.js + Next.js docs).
  */
 declare global {
-  // eslint-disable-next-line no-var -- survive hot reload in dev
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 

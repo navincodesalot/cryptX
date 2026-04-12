@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowRightLeft,
   BarChart2,
   CheckCircle2,
-  CircleDashed,
   Cpu,
   Download,
   ExternalLink,
@@ -45,10 +44,11 @@ import {
   canonicalLedgerDeviceId,
   parseMetaSaltHex,
 } from "@/lib/ledgerDeviceId";
+import { OrbitLoader } from "@/components/cosmic/orbit-loader";
+import { TxShootingStar } from "@/components/cosmic/tx-shooting-star";
 import { sendClientLedgerLog } from "@/lib/logging/clientLog";
 
-const HARDWARE_MODE =
-  process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
+const HARDWARE_MODE = process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
 
 const PIN_LENGTH = 6;
 /** Must match firmware SIGN_TIMEOUT_MS (ledger.ino) */
@@ -120,23 +120,16 @@ function shortAddr(addr: string) {
 
 /** Renders chain time in the viewer's local timezone (avoids UTC from SSR). */
 function LocalTxTime({ blockTime }: { blockTime: number | null }) {
-  const [label, setLabel] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (blockTime == null) {
-      setLabel("—");
-      return;
-    }
+  const label = useMemo(() => {
+    if (blockTime == null) return "—";
     const d = new Date(blockTime * 1000);
-    setLabel(
-      d.toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "medium",
-      }),
-    );
+    return d.toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "medium",
+    });
   }, [blockTime]);
 
-  return <span suppressHydrationWarning>{label ?? "—"}</span>;
+  return <span suppressHydrationWarning>{label}</span>;
 }
 
 /* ─── Managed serial connection ──────────────────────────────────────────── */
@@ -195,17 +188,12 @@ class DeviceConnection {
   }
 
   async send(cmd: string) {
-    if (!this.writer) {
-      this.writer = this.port.writable!.getWriter();
-    }
+    this.writer ??= this.port.writable!.getWriter();
     const enc = new TextEncoder();
     await this.writer.write(enc.encode(cmd + "\n"));
   }
 
-  waitFor(
-    test: (line: string) => boolean,
-    timeoutMs: number,
-  ): Promise<string> {
+  waitFor(test: (line: string) => boolean, timeoutMs: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(waiter);
@@ -222,16 +210,24 @@ class DeviceConnection {
     this.waiters.clear();
     try {
       await this.reader?.cancel();
-    } catch { /* */ }
+    } catch {
+      /* */
+    }
     try {
       this.reader?.releaseLock();
-    } catch { /* */ }
+    } catch {
+      /* */
+    }
     try {
       this.writer?.releaseLock();
-    } catch { /* */ }
+    } catch {
+      /* */
+    }
     try {
       await this.port.close();
-    } catch { /* */ }
+    } catch {
+      /* */
+    }
     this.reader = null;
     this.writer = null;
   }
@@ -258,10 +254,8 @@ function parseFullStateLine(line: string): {
   const deviceId = parts[1] ?? "?";
   const pinSet = (parts[2] ?? "0") === "1";
   const pinFails = parseInt(parts[3] ?? "0", 10) || 0;
-  const seedSet =
-    parts.length >= 6 ? (parts[4] ?? "0") === "1" : false;
-  const seedHostAck =
-    parts.length >= 6 ? (parts[5] ?? "0") === "1" : false;
+  const seedSet = parts.length >= 6 ? (parts[4] ?? "0") === "1" : false;
+  const seedHostAck = parts.length >= 6 ? (parts[5] ?? "0") === "1" : false;
   return { mode, deviceId, pinSet, pinFails, seedSet, seedHostAck };
 }
 
@@ -301,16 +295,13 @@ function processSerialLine(
     const refId = getLedgerLogId();
     if (refId) return refId;
     const hw = getHwState();
-    return (
-      hw.logDeviceId || canonicalLedgerDeviceId(hw.deviceId, null)
-    );
+    return hw.logDeviceId || canonicalLedgerDeviceId(hw.deviceId, null);
   };
   if (line.startsWith("STATE:")) {
     const parts = line.slice(6).split(",");
     const full = parseFullStateLine(line);
     if (full) {
-      const { mode, deviceId, pinSet, pinFails, seedSet, seedHostAck } =
-        full;
+      const { mode, deviceId, pinSet, pinFails, seedSet, seedHostAck } = full;
       const signing = mode === "SIGNING";
       setState((p) => ({
         ...p,
@@ -362,7 +353,6 @@ function processSerialLine(
       pinProgress: 0,
     }));
   } else if (line === "WIPED") {
-    const hw = getHwState();
     void sendClientLedgerLog(
       {
         deviceId: logId(),
@@ -411,7 +401,7 @@ function PinDots({ filled }: { filled: number }) {
           className={cn(
             "size-3 rounded-full border transition-all",
             i < filled
-              ? "border-primary bg-primary scale-110"
+              ? "scale-110 border-primary bg-primary/90 shadow-[0_0_12px_oklch(0.62_0.14_300/55%)]"
               : "border-muted-foreground/40 bg-transparent",
           )}
         />
@@ -432,12 +422,11 @@ function SigningDeadline({ endsAt }: { endsAt: number | null }) {
   const sec = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
   if (sec <= 0) return null;
   return (
-    <p className="text-muted-foreground text-xs tabular-nums">
+    <p className="text-primary/95 text-xs tabular-nums">
       Signing window ~{sec}s left
     </p>
   );
 }
-
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  Page                                                                      */
@@ -452,6 +441,8 @@ export default function HomePage() {
   const [sendingFrom, setSendingFrom] = useState<"A" | "B" | null>(null);
   const [awaitingHw, setAwaitingHw] = useState<"A" | "B" | null>(null);
   const [connectingHw, setConnectingHw] = useState<"A" | "B" | null>(null);
+  /** Visual-only: increments after a confirmed on-chain transfer (shooting star). */
+  const [txLaunchSeq, setTxLaunchSeq] = useState(0);
 
   const [hwStateA, setHwStateA] = useState<HwState>(INITIAL_HW);
   const [hwStateB, setHwStateB] = useState<HwState>(INITIAL_HW);
@@ -482,20 +473,20 @@ export default function HomePage() {
   /** Must not read `navigator` during SSR — it differs on client (Web Serial) and causes hydration mismatches. */
   const [hasSerial, setHasSerial] = useState(false);
   useEffect(() => {
-    setHasSerial(
-      typeof navigator !== "undefined" && "serial" in navigator,
-    );
+    setHasSerial(typeof navigator !== "undefined" && "serial" in navigator);
   }, []);
 
   const addrA = ledgerA?.address ?? "";
   const addrB = ledgerB?.address ?? "";
 
+  /* eslint-disable react-hooks/exhaustive-deps -- unmount closes live serial refs, not a render snapshot */
   useEffect(() => {
     return () => {
-      deviceARef.current?.close();
-      deviceBRef.current?.close();
+      void deviceARef.current?.close();
+      void deviceBRef.current?.close();
     };
   }, []);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   // Auto-open recovery modal the moment a device is wiped
   useEffect(() => {
@@ -590,8 +581,7 @@ export default function HomePage() {
       usbSession = true;
 
       const device = new DeviceConnection(port);
-      const logRef =
-        ledger === "A" ? ledgerLogIdARef : ledgerLogIdBRef;
+      const logRef = ledger === "A" ? ledgerLogIdARef : ledgerLogIdBRef;
       const getHw = () => (ledger === "A" ? hwStateA : hwStateB);
       // Defer `onLine` until canonical id exists so logs never use UI-slot–based keys.
       await device.start();
@@ -605,15 +595,10 @@ export default function HomePage() {
 
       await device.send("STATE");
       const stateLine = await device
-        .waitFor(
-          (l) => l.startsWith("STATE:") && l.includes(","),
-          3000,
-        )
+        .waitFor((l) => l.startsWith("STATE:") && l.includes(","), 3000)
         .catch(() => null);
 
-      const parsedState = stateLine
-        ? parseFullStateLine(stateLine)
-        : null;
+      const parsedState = stateLine ? parseFullStateLine(stateLine) : null;
       const mode = parsedState?.mode ?? "UNKNOWN";
       const pinSet = parsedState?.pinSet ?? false;
       const pinFails = parsedState?.pinFails ?? 0;
@@ -627,14 +612,8 @@ export default function HomePage() {
         .catch(() => null);
       const metaSalt = metaLine ? parseMetaSaltHex(metaLine) : null;
 
-      const canonicalId = canonicalLedgerDeviceId(
-        stateDeviceId,
-        metaSalt,
-      );
-      const idForWrongSlotLog = canonicalLedgerDeviceId(
-        detectedId,
-        metaSalt,
-      );
+      const canonicalId = canonicalLedgerDeviceId(stateDeviceId, metaSalt);
+      const idForWrongSlotLog = canonicalLedgerDeviceId(detectedId, metaSalt);
 
       // Enforce A/B match in hardware mode — skip for INIT/WIPED where ID may not yet be set
       if (
@@ -686,19 +665,12 @@ export default function HomePage() {
       logRef.current = canonicalId;
 
       device.onLine = (line) =>
-        processSerialLine(
-          line,
-          setState,
-          ledger,
-          getHw,
-          () => logRef.current,
-        );
+        processSerialLine(line, setState, ledger, getHw, () => logRef.current);
 
       device.onDisconnect = () => {
         const hwSnap = ledger === "A" ? hwStateA : hwStateB;
         const duringSigning =
-          hwSnap.signExpiresAt != null &&
-          hwSnap.signExpiresAt > Date.now();
+          hwSnap.signExpiresAt != null && hwSnap.signExpiresAt > Date.now();
         const disconnectId = logRef.current;
         logRef.current = null;
         void sendClientLedgerLog(
@@ -752,9 +724,7 @@ export default function HomePage() {
           },
           { usbConnected: usbSession },
         );
-        toast.error(
-          err instanceof Error ? err.message : "Failed to connect",
-        );
+        toast.error(err instanceof Error ? err.message : "Failed to connect");
       }
     } finally {
       setConnectingHw(null);
@@ -763,8 +733,7 @@ export default function HomePage() {
 
   /* ── Register (SETID) ─────────────────────────────────────────────────── */
   const registerDevice = async (ledger: "A" | "B") => {
-    const device =
-      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
     if (!device) return;
 
     const prevOnLine = device.onLine;
@@ -817,8 +786,7 @@ export default function HomePage() {
 
   /* After power loss mid–PIN: device boots INIT; host sends MODE 1 to enter SET_PIN. */
   const resumePinSetup = async (ledger: "A" | "B") => {
-    const device =
-      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
     if (!device) {
       toast.error(`Connect Ledger ${ledger} first`);
       return;
@@ -841,8 +809,7 @@ export default function HomePage() {
       return;
     }
     const { ledger } = seedBackupModal;
-    const device =
-      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
     try {
       if (device) {
         await device.send("SEED_ACK");
@@ -865,8 +832,7 @@ export default function HomePage() {
   const confirmRecover = async () => {
     if (!recoverModal) return;
     const { ledger } = recoverModal;
-    const device =
-      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    const device = ledger === "A" ? deviceARef.current : deviceBRef.current;
     if (!device) {
       toast.error(`Ledger ${ledger} is not connected`);
       return;
@@ -887,8 +853,7 @@ export default function HomePage() {
         if (idx === undefined) throw new Error("missing index");
         await device.send(`SVI ${idx}`);
         const line = await device.waitFor(
-          (l) =>
-            l === "SVI_NEXT" || l === "SEED_OK" || l === "SEED_BAD",
+          (l) => l === "SVI_NEXT" || l === "SEED_OK" || l === "SEED_BAD",
           8000,
         );
         if (line === "SEED_BAD") {
@@ -938,8 +903,7 @@ export default function HomePage() {
       const words = parseSeedLinesToWords(buf);
       const hw = ledger === "A" ? hwStateA : hwStateB;
       const logDev =
-        hw.logDeviceId ||
-        canonicalLedgerDeviceId(hw.deviceId, null);
+        hw.logDeviceId || canonicalLedgerDeviceId(hw.deviceId, null);
       void sendClientLedgerLog(
         {
           deviceId: logDev,
@@ -953,9 +917,7 @@ export default function HomePage() {
       setRecoverPhraseInput("");
       setSeedDownloaded(false);
       setSeedBackupModal({ ledger, words });
-      toast.success(
-        `Ledger ${ledger} recovered — save your new seed phrase`,
-      );
+      toast.success(`Ledger ${ledger} recovered — save your new seed phrase`);
     } catch {
       toast.error("Recovery failed — check device is in WIPED mode");
     } finally {
@@ -968,21 +930,17 @@ export default function HomePage() {
     setSendingFrom(from);
     try {
       if (HARDWARE_MODE) {
-        const device =
-          from === "A" ? deviceARef.current : deviceBRef.current;
+        const device = from === "A" ? deviceARef.current : deviceBRef.current;
         const hw = from === "A" ? hwStateA : hwStateB;
         const logDev =
-          hw.logDeviceId ||
-          canonicalLedgerDeviceId(hw.deviceId, null);
+          hw.logDeviceId || canonicalLedgerDeviceId(hw.deviceId, null);
 
         if (!device || !hw.connected) {
           toast.error(`Connect Ledger ${from} first`);
           return;
         }
         if (hw.mode !== "READY") {
-          toast.error(
-            `Ledger ${from} is not ready. Complete setup first.`,
-          );
+          toast.error(`Ledger ${from} is not ready. Complete setup first.`);
           return;
         }
 
@@ -1110,6 +1068,7 @@ export default function HomePage() {
           </a>
         ),
       });
+      setTxLaunchSeq((n) => n + 1);
 
       await fetchBalances();
       await fetchHistory();
@@ -1124,382 +1083,382 @@ export default function HomePage() {
 
   /* ── Render ────────────────────────────────────────────────────────────── */
   return (
-    <main className="bg-background text-foreground p-6 md:p-10">
-      <div className="mx-auto max-w-4xl space-y-8">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
-              Wallet
-            </h1>
-            <p className="text-muted-foreground text-sm">
-              DIY Hardware Wallet Network
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={refreshAll}
-              disabled={loadingBalances || loadingHistory}
-              title="Refresh balances and history"
-            >
-              <RefreshCw
-                className={cn(
-                  "size-4",
-                  (loadingBalances || loadingHistory) && "animate-spin",
-                )}
-              />
-              <span className="ml-2">Refresh</span>
-            </Button>
-          </div>
-        </header>
-
-        <Separator />
-
-        {/* No Web Serial warning */}
-        {HARDWARE_MODE && !hasSerial && (
-          <Card className="border-destructive">
-            <CardContent className="flex items-center gap-3 py-4">
-              <AlertTriangle className="text-destructive size-5 shrink-0" />
-              <p className="text-sm">
-                Hardware Mode is on but your browser does not support Web
-                Serial. Use Chrome or Edge.
+    <>
+      <TxShootingStar launchKey={txLaunchSeq} />
+      <main className="text-foreground relative bg-transparent p-6 md:p-10">
+        <div className="mx-auto max-w-4xl space-y-8">
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                Wallet
+              </h1>
+              <p className="text-muted-foreground text-sm">
+                Hardware wallets · Solana testnet
               </p>
-            </CardContent>
-          </Card>
-        )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={refreshAll}
+                disabled={loadingBalances || loadingHistory}
+                title="Refresh balances and history"
+              >
+                {loadingBalances || loadingHistory ? (
+                  <OrbitLoader className="size-4" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                <span className="ml-2">Refresh</span>
+              </Button>
+            </div>
+          </header>
 
-        {/* Ledger Cards */}
-        <section className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <LedgerCard
-            label="Ledger A"
-            index="A"
-            wallet={ledgerA}
-            loading={loadingBalances}
-            hwState={hwStateA}
-            hardwareMode={HARDWARE_MODE}
-            sendingNow={sendingFrom === "A"}
-            awaitingHardware={awaitingHw === "A"}
-            connectingHardware={connectingHw === "A"}
-            hasSerial={hasSerial}
-            isBlacklisted={blacklistedDevice?.ledger === "A"}
-            sendAmount={sendAmountA}
-            setSendAmount={setSendAmountA}
-            onSend={(amount) => handleTransfer("A", amount)}
-            onConnect={() => connectHardware("A")}
-            onRegister={() => registerDevice("A")}
-            onResumePin={() => resumePinSetup("A")}
-            onRecover={() => recoverDevice("A")}
-          />
-          <LedgerCard
-            label="Ledger B"
-            index="B"
-            wallet={ledgerB}
-            loading={loadingBalances}
-            hwState={hwStateB}
-            hardwareMode={HARDWARE_MODE}
-            sendingNow={sendingFrom === "B"}
-            awaitingHardware={awaitingHw === "B"}
-            connectingHardware={connectingHw === "B"}
-            hasSerial={hasSerial}
-            isBlacklisted={blacklistedDevice?.ledger === "B"}
-            sendAmount={sendAmountB}
-            setSendAmount={setSendAmountB}
-            onSend={(amount) => handleTransfer("B", amount)}
-            onConnect={() => connectHardware("B")}
-            onRegister={() => registerDevice("B")}
-            onResumePin={() => resumePinSetup("B")}
-            onRecover={() => recoverDevice("B")}
-          />
-        </section>
+          <Separator />
 
-        {/* Transfer indicator */}
-        <div className="text-muted-foreground flex items-center justify-center gap-3 text-sm">
-          <span className="font-mono text-xs">{shortAddr(addrA)}</span>
-          <ArrowRightLeft className="size-4" />
-          <span className="font-mono text-xs">{shortAddr(addrB)}</span>
-        </div>
-
-        <Separator />
-
-        {/* Transaction History */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              Transaction History
-            </h2>
-            {loadingHistory && (
-              <CircleDashed className="text-muted-foreground size-4 animate-spin" />
-            )}
-          </div>
-
-          {txHistory.length === 0 && !loadingHistory ? (
-            <Card>
-              <CardContent className="text-muted-foreground py-10 text-center text-sm">
-                No transactions yet. Send a transfer once you have SOL.
+          {/* No Web Serial warning */}
+          {HARDWARE_MODE && !hasSerial && (
+            <Card className="border-destructive">
+              <CardContent className="flex items-center gap-3 py-4">
+                <AlertTriangle className="text-destructive size-5 shrink-0" />
+                <p className="text-sm">
+                  Hardware Mode is on but your browser does not support Web
+                  Serial. Use Chrome or Edge.
+                </p>
               </CardContent>
             </Card>
-          ) : (
-            <Card>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-8" />
-                    <TableHead>Time</TableHead>
-                    <TableHead>From</TableHead>
-                    <TableHead>To</TableHead>
-                    <TableHead className="text-right">Amount</TableHead>
-                    <TableHead className="text-right">Fee</TableHead>
-                    <TableHead className="w-8" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {txHistory.map((tx) => (
-                    <TableRow key={tx.signature}>
-                      <TableCell>
-                        {tx.status === "success" ? (
-                          <CheckCircle2 className="size-4 text-emerald-400" />
-                        ) : (
-                          <XCircle className="size-4 text-destructive" />
-                        )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs tabular-nums">
-                        <LocalTxTime blockTime={tx.blockTime} />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        <AddressLabel
-                          addr={tx.from}
-                          addrA={addrA}
-                          addrB={addrB}
-                        />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        <AddressLabel
-                          addr={tx.to}
-                          addrA={addrA}
-                          addrB={addrB}
-                        />
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {tx.amount > 0 ? (
-                          <span className="text-sm font-medium">
-                            {tx.amount.toFixed(4)}
-                            <span className="text-muted-foreground ml-1 text-xs">
-                              SOL
-                            </span>
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">
-                            —
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-right text-xs tabular-nums">
-                        {tx.fee.toFixed(6)}
-                      </TableCell>
-                      <TableCell>
-                        <a
-                          href={`https://explorer.solana.com/tx/${tx.signature}?cluster=testnet`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-muted-foreground hover:text-foreground"
-                          title="View on Explorer"
-                        >
-                          <ExternalLink className="size-3" />
-                        </a>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
           )}
-        </section>
-      </div>
 
-      {/* ── Seed Phrase Backup Modal ─────────────────────────────────── */}
-      {seedBackupModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
-          <div className="bg-popover relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-foreground/10">
-            <div className="flex flex-col gap-1">
-              <h2 className="font-heading text-base font-medium leading-none">
-                Backup Your Seed Phrase
-              </h2>
-              <p className="text-muted-foreground text-sm">
-                These words were generated on your ledger device and the indices
-                are stored in device memory. This page maps them to the standard
-                BIP-39 English list. Write them down in order — you need them
-                after a PIN wipe. Never share them with anyone.
-              </p>
+          {/* Ledger Cards — items-start avoids stretching short cards when one column is taller */}
+          <section className="grid grid-cols-1 items-start gap-6 sm:grid-cols-2">
+            <LedgerCard
+              label="Ledger A"
+              index="A"
+              wallet={ledgerA}
+              loading={loadingBalances}
+              hwState={hwStateA}
+              hardwareMode={HARDWARE_MODE}
+              sendingNow={sendingFrom === "A"}
+              awaitingHardware={awaitingHw === "A"}
+              connectingHardware={connectingHw === "A"}
+              hasSerial={hasSerial}
+              isBlacklisted={blacklistedDevice?.ledger === "A"}
+              sendAmount={sendAmountA}
+              setSendAmount={setSendAmountA}
+              onSend={(amount) => handleTransfer("A", amount)}
+              onConnect={() => connectHardware("A")}
+              onRegister={() => registerDevice("A")}
+              onResumePin={() => resumePinSetup("A")}
+              onRecover={() => recoverDevice("A")}
+            />
+            <LedgerCard
+              label="Ledger B"
+              index="B"
+              wallet={ledgerB}
+              loading={loadingBalances}
+              hwState={hwStateB}
+              hardwareMode={HARDWARE_MODE}
+              sendingNow={sendingFrom === "B"}
+              awaitingHardware={awaitingHw === "B"}
+              connectingHardware={connectingHw === "B"}
+              hasSerial={hasSerial}
+              isBlacklisted={blacklistedDevice?.ledger === "B"}
+              sendAmount={sendAmountB}
+              setSendAmount={setSendAmountB}
+              onSend={(amount) => handleTransfer("B", amount)}
+              onConnect={() => connectHardware("B")}
+              onRegister={() => registerDevice("B")}
+              onResumePin={() => resumePinSetup("B")}
+              onRecover={() => recoverDevice("B")}
+            />
+          </section>
+
+          {/* Transfer indicator */}
+          <div className="text-muted-foreground flex items-center justify-center gap-3 text-sm">
+            <span className="font-mono text-xs">{shortAddr(addrA)}</span>
+            <ArrowRightLeft className="size-4" />
+            <span className="font-mono text-xs">{shortAddr(addrB)}</span>
+          </div>
+
+          <Separator />
+
+          {/* Transaction History */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Transaction History</h2>
+              {loadingHistory && (
+                <OrbitLoader className="text-muted-foreground size-4" />
+              )}
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {seedBackupModal.words.map((word, i) => (
-                <div
-                  key={i}
-                  className="bg-muted flex items-center gap-2 rounded-md px-3 py-2"
+            {txHistory.length === 0 && !loadingHistory ? (
+              <Card>
+                <CardContent className="text-muted-foreground py-10 text-center text-sm">
+                  No transactions yet. Send a transfer once you have SOL.
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-8" />
+                      <TableHead>Time</TableHead>
+                      <TableHead>From</TableHead>
+                      <TableHead>To</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-right">Fee</TableHead>
+                      <TableHead className="w-8" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {txHistory.map((tx) => (
+                      <TableRow key={tx.signature}>
+                        <TableCell>
+                          {tx.status === "success" ? (
+                            <CheckCircle2 className="size-4 text-emerald-400" />
+                          ) : (
+                            <XCircle className="text-destructive size-4" />
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs tabular-nums">
+                          <LocalTxTime blockTime={tx.blockTime} />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          <AddressLabel
+                            addr={tx.from}
+                            addrA={addrA}
+                            addrB={addrB}
+                          />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          <AddressLabel
+                            addr={tx.to}
+                            addrA={addrA}
+                            addrB={addrB}
+                          />
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {tx.amount > 0 ? (
+                            <span className="text-sm font-medium">
+                              {tx.amount.toFixed(4)}
+                              <span className="text-muted-foreground ml-1 text-xs">
+                                SOL
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">
+                              —
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-right text-xs tabular-nums">
+                          {tx.fee.toFixed(6)}
+                        </TableCell>
+                        <TableCell>
+                          <a
+                            href={`https://explorer.solana.com/tx/${tx.signature}?cluster=testnet`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-muted-foreground hover:text-foreground"
+                            title="View on Explorer"
+                          >
+                            <ExternalLink className="size-3" />
+                          </a>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Card>
+            )}
+          </section>
+        </div>
+
+        {/* ── Seed Phrase Backup Modal ─────────────────────────────────── */}
+        {seedBackupModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
+            <div className="bg-popover ring-foreground/10 relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1">
+              <div className="flex flex-col gap-1">
+                <h2 className="font-heading text-base leading-none font-medium">
+                  Backup Your Seed Phrase
+                </h2>
+                <p className="text-muted-foreground text-sm">
+                  These words were generated on your ledger device and the
+                  indices are stored in device memory. This page maps them to
+                  the standard BIP-39 English list. Write them down in order —
+                  you need them after a PIN wipe. Never share them with anyone.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {seedBackupModal.words.map((word, i) => (
+                  <div
+                    key={i}
+                    className="bg-muted flex items-center gap-2 rounded-md px-3 py-2"
+                  >
+                    <span className="text-muted-foreground w-5 text-right font-mono text-xs">
+                      {i + 1}.
+                    </span>
+                    <span className="font-mono text-sm font-medium">
+                      {word}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 p-3">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                <p className="text-xs text-amber-500">
+                  This is the only time your seed phrase will be shown. Store it
+                  securely — you cannot view it again. The device will not move
+                  to PIN setup until you download the .txt file below.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => {
+                    const content = seedBackupModal.words.join(" ");
+                    const blob = new Blob([content], { type: "text/plain" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `ledger-${seedBackupModal.ledger}-seed.txt`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    setSeedDownloaded(true);
+                  }}
                 >
-                  <span className="text-muted-foreground w-5 text-right font-mono text-xs">
-                    {i + 1}.
-                  </span>
-                  <span className="font-mono text-sm font-medium">
-                    {word}
-                  </span>
+                  <Download className="mr-2 size-4" />
+                  Download as .txt
+                </Button>
+                <Button
+                  type="button"
+                  className="w-full"
+                  disabled={!seedDownloaded}
+                  onClick={confirmSeedBackup}
+                >
+                  {seedDownloaded
+                    ? "I've Saved It — Continue"
+                    : "Download first to continue"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Seed Phrase Recovery Modal ────────────────────────────────── */}
+        {recoverModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Non-interactive backdrop — clicking it does nothing */}
+            <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
+            <div className="bg-popover ring-foreground/10 relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="text-destructive size-4 shrink-0" />
+                  <h2 className="font-heading text-base leading-none font-medium">
+                    Recovery Mode — Device Wiped
+                  </h2>
                 </div>
-              ))}
-            </div>
+                <p className="text-muted-foreground text-sm">
+                  Ledger {recoverModal.ledger} was wiped after 3 wrong PIN
+                  attempts. Enter all 12 seed words in order to unlock the
+                  device. This modal cannot be dismissed.
+                </p>
+              </div>
 
-            <div className="bg-amber-500/10 flex items-start gap-2 rounded-lg p-3">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-              <p className="text-xs text-amber-500">
-                This is the only time your seed phrase will be shown. Store it
-                securely — you cannot view it again. The device will not move
-                to PIN setup until you download the .txt file below.
-              </p>
-            </div>
+              <Textarea
+                placeholder="word1 word2 word3 …"
+                rows={4}
+                value={recoverPhraseInput}
+                onChange={(e) => setRecoverPhraseInput(e.target.value)}
+                className="font-mono text-sm"
+              />
 
-            <div className="flex flex-col gap-2">
               <Button
-                type="button"
-                variant="outline"
                 className="w-full"
-                onClick={() => {
-                  const content = seedBackupModal.words.join(" ");
-                  const blob = new Blob([content], { type: "text/plain" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `ledger-${seedBackupModal.ledger}-seed.txt`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  setSeedDownloaded(true);
-                }}
+                disabled={
+                  verifyingPhrase ||
+                  recoverPhraseInput.trim().split(/\s+/).length !== 12
+                }
+                onClick={confirmRecover}
               >
-                <Download className="mr-2 size-4" />
-                Download as .txt
-              </Button>
-              <Button
-                type="button"
-                className="w-full"
-                disabled={!seedDownloaded}
-                onClick={confirmSeedBackup}
-              >
-                {seedDownloaded
-                  ? "I've Saved It — Continue"
-                  : "Download first to continue"}
+                {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
               </Button>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* ── Seed Phrase Recovery Modal ────────────────────────────────── */}
-      {recoverModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          {/* Non-interactive backdrop — clicking it does nothing */}
-          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
-          <div className="bg-popover relative z-10 flex w-full max-w-lg flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-foreground/10">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="text-destructive size-4 shrink-0" />
-                <h2 className="font-heading text-base font-medium leading-none">
-                  Recovery Mode — Device Wiped
-                </h2>
+        {/* ── Blacklisted Device Modal ─────────────────────────────────── */}
+        {blacklistedDevice && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
+            <div className="bg-popover ring-destructive/40 relative z-10 flex w-full max-w-md flex-col gap-4 rounded-xl p-6 shadow-lg ring-1">
+              <div className="flex items-center gap-3">
+                <ShieldAlert className="text-destructive size-6 shrink-0" />
+                <h2 className="text-base font-semibold">Device Blocked</h2>
               </div>
               <p className="text-muted-foreground text-sm">
-                Ledger {recoverModal.ledger} was wiped after 3 wrong PIN
-                attempts. Enter all 12 seed words in order to unlock the
-                device. This modal cannot be dismissed.
+                Ledger {blacklistedDevice.ledger} has been flagged and is no
+                longer permitted to use this platform.
+              </p>
+              <p className="text-muted-foreground text-xs">
+                Reason: {blacklistedDevice.reason}
+              </p>
+              <div className="bg-muted space-y-1 rounded-lg p-4 text-sm">
+                <p className="font-medium">Contact Support</p>
+                <p className="text-muted-foreground">
+                  Email: support@cryptx.dev
+                </p>
+                <p className="text-muted-foreground">
+                  Discord: discord.gg/cryptx
+                </p>
+                <p className="text-muted-foreground">
+                  Reference ID: {blacklistedDevice.ledger}-blocked
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full sm:flex-1"
+                  onClick={() => setBlacklistedDevice(null)}
+                >
+                  Try again
+                </Button>
+                <a
+                  href="/auth/logout"
+                  className={cn(
+                    buttonVariants({ variant: "outline" }),
+                    "inline-flex w-full flex-1 gap-1.5 sm:w-auto",
+                  )}
+                  onClick={() => {
+                    void fetch("/api/session/log", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ event: "logout" }),
+                    });
+                  }}
+                >
+                  <LogOut className="mr-2 size-3.5" />
+                  Log out
+                </a>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                If support removed your device from the block list, tap Try
+                again and connect your ledger again — the port opens as soon as
+                the check passes.
               </p>
             </div>
-
-            <Textarea
-              placeholder="word1 word2 word3 …"
-              rows={4}
-              value={recoverPhraseInput}
-              onChange={(e) => setRecoverPhraseInput(e.target.value)}
-              className="font-mono text-sm"
-            />
-
-            <Button
-              className="w-full"
-              disabled={
-                verifyingPhrase ||
-                recoverPhraseInput.trim().split(/\s+/).length !== 12
-              }
-              onClick={confirmRecover}
-            >
-              {verifyingPhrase ? "Verifying…" : "Verify & Recover"}
-            </Button>
           </div>
-        </div>
-      )}
-
-      {/* ── Blacklisted Device Modal ─────────────────────────────────── */}
-      {blacklistedDevice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="bg-background/80 fixed inset-0 backdrop-blur-sm" />
-          <div className="bg-popover relative z-10 flex w-full max-w-md flex-col gap-4 rounded-xl p-6 shadow-lg ring-1 ring-destructive/40">
-            <div className="flex items-center gap-3">
-              <ShieldAlert className="text-destructive size-6 shrink-0" />
-              <h2 className="text-base font-semibold">Device Blocked</h2>
-            </div>
-            <p className="text-muted-foreground text-sm">
-              Ledger {blacklistedDevice.ledger} has been flagged and is no
-              longer permitted to use this platform.
-            </p>
-            <p className="text-muted-foreground text-xs">
-              Reason: {blacklistedDevice.reason}
-            </p>
-            <div className="bg-muted space-y-1 rounded-lg p-4 text-sm">
-              <p className="font-medium">Contact Support</p>
-              <p className="text-muted-foreground">
-                Email: support@cryptx.dev
-              </p>
-              <p className="text-muted-foreground">
-                Discord: discord.gg/cryptx
-              </p>
-              <p className="text-muted-foreground">
-                Reference ID: {blacklistedDevice.ledger}-blocked
-              </p>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full sm:flex-1"
-                onClick={() => setBlacklistedDevice(null)}
-              >
-                Try again
-              </Button>
-              <a
-                href="/auth/logout"
-                className={cn(
-                  buttonVariants({ variant: "outline" }),
-                  "inline-flex w-full flex-1 gap-1.5 sm:w-auto",
-                )}
-                onClick={() => {
-                  void fetch("/api/session/log", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ event: "logout" }),
-                  });
-                }}
-              >
-                <LogOut className="mr-2 size-3.5" />
-                Log out
-              </a>
-            </div>
-            <p className="text-muted-foreground text-xs">
-              If support removed your device from the block list, tap Try again
-              and connect your ledger again — the port opens as soon as the check
-              passes.
-            </p>
-          </div>
-        </div>
-      )}
-    </main>
+        )}
+      </main>
+    </>
   );
 }
 
@@ -1546,28 +1505,27 @@ function LedgerCard({
   onRecover: () => void;
 }) {
   const short = wallet ? shortAddr(wallet.address) : "—";
-  const busy =
-    sendingNow ||
-    awaitingHardware ||
-    loading ||
-    connectingHardware;
+  const busy = sendingNow || awaitingHardware || loading || connectingHardware;
 
   const isSetup =
     hwState.mode === "INIT" ||
     hwState.mode === "SET_PIN" ||
     hwState.mode === "CONFIRM_PIN";
   const isWiped = hwState.mode === "WIPED";
-  const isSigning =
-    hwState.mode === "SIGNING" || awaitingHardware;
+  const isSigning = hwState.mode === "SIGNING" || awaitingHardware;
   const isReady = hwState.mode === "READY";
   const showSetupFlow =
     hardwareMode && hwState.connected && (isSetup || isWiped);
 
   const parsedAmount = parseFloat(sendAmount);
   const amountValid =
-    !Number.isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount <= (wallet?.balance ?? 0);
+    !Number.isNaN(parsedAmount) &&
+    parsedAmount > 0 &&
+    parsedAmount <= (wallet?.balance ?? 0);
   const amountOverBalance =
-    !Number.isNaN(parsedAmount) && parsedAmount > 0 && parsedAmount > (wallet?.balance ?? 0);
+    !Number.isNaN(parsedAmount) &&
+    parsedAmount > 0 &&
+    parsedAmount > (wallet?.balance ?? 0);
 
   let sendLabel = `Send ${amountValid ? parsedAmount : "—"} SOL`;
   if (awaitingHardware) sendLabel = "Enter PIN on device…";
@@ -1580,7 +1538,7 @@ function LedgerCard({
     (hardwareMode && (!hwState.connected || !isReady));
 
   return (
-    <Card className="flex flex-col">
+    <Card className="flex w-full min-w-0 flex-col">
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2">
@@ -1595,30 +1553,35 @@ function LedgerCard({
                   hwState.connected
                     ? isReady
                       ? "bg-emerald-400"
-                      : "bg-amber-400"
+                      : "bg-primary shadow-[0_0_10px_oklch(0.62_0.12_300/45%)]"
                     : "bg-muted-foreground/30",
                 )}
                 title={
-                  hwState.connected
-                    ? `Mode: ${hwState.mode}`
-                    : "Not connected"
+                  hwState.connected ? `Mode: ${hwState.mode}` : "Not connected"
                 }
               />
             )}
             <Badge
               variant="outline"
-              className="border-primary/35 bg-primary/10 font-medium text-primary"
+              className="border-primary/35 bg-primary/10 text-primary font-medium"
             >
               Ledger {index}
             </Badge>
           </div>
         </div>
-        <CardDescription className="font-mono text-xs">
-          {loading ? "Loading…" : short}
+        <CardDescription className="inline-flex items-center gap-2 font-mono text-xs">
+          {loading ? (
+            <>
+              <OrbitLoader className="size-3.5 shrink-0" />
+              <span>Syncing…</span>
+            </>
+          ) : (
+            short
+          )}
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="flex-1 space-y-4">
+      <CardContent className="space-y-4">
         {/* ── Balance (always shown) ─────────────────────────── */}
         <div>
           <p className="text-5xl font-bold tabular-nums">
@@ -1631,19 +1594,43 @@ function LedgerCard({
           <p className="text-muted-foreground mt-1 text-sm">SOL</p>
         </div>
 
-        {/* ── Hardware status overlay ────────────────────────── */}
-        {hardwareMode && !hwState.connected && (
-          <div className="border-primary/25 bg-primary/5 flex flex-col items-center gap-3 rounded-lg border py-6">
-            <Usb className="text-primary size-8" />
-            <p className="text-center text-sm">
-              <span className="text-primary font-medium">Connect a ledger</span>
-              <span className="text-muted-foreground">
-                {" "}
-                below to begin
-              </span>
-            </p>
-          </div>
-        )}
+        {/* ── Hardware: connect (tap this block — no separate footer connect button) ─ */}
+        {hardwareMode &&
+          !hwState.connected &&
+          (hasSerial ? (
+            <button
+              type="button"
+              className={cn(
+                "border-primary/25 bg-primary/5 flex w-full flex-col items-center gap-3 rounded-lg border py-6 transition-colors",
+                "hover:bg-primary/10 hover:border-primary/35 focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                (busy || connectingHardware || isBlacklisted) &&
+                  "pointer-events-none opacity-50",
+                connectingHardware && "border-primary/40 bg-primary/10",
+              )}
+              onClick={onConnect}
+              disabled={busy || connectingHardware || isBlacklisted}
+            >
+              <Usb className="text-primary size-8 shrink-0" />
+              <p className="text-center text-sm leading-snug">
+                <span className="text-primary block font-medium">
+                  {connectingHardware ? "Connecting…" : "Connect a ledger"}
+                </span>
+                {!connectingHardware && (
+                  <span className="text-muted-foreground mt-1 block text-xs">
+                    Tap here to pair over USB
+                  </span>
+                )}
+              </p>
+            </button>
+          ) : (
+            <div className="border-muted-foreground/20 bg-muted/30 flex flex-col items-center gap-2 rounded-lg border py-6">
+              <Usb className="text-muted-foreground size-8" />
+              <p className="text-muted-foreground px-4 text-center text-sm">
+                Web Serial is not available in this browser. Use Chrome or Edge
+                to connect a ledger.
+              </p>
+            </div>
+          ))}
 
         {showSetupFlow &&
           hwState.mode === "INIT" &&
@@ -1682,30 +1669,23 @@ function LedgerCard({
               <p className="text-muted-foreground text-xs">
                 Register this device as Ledger {index}
               </p>
-              <Button
-                size="sm"
-                className="w-full"
-                onClick={onRegister}
-              >
+              <Button size="sm" className="w-full" onClick={onRegister}>
                 Register as Ledger {index}
               </Button>
             </div>
           )}
 
         {showSetupFlow &&
-          (hwState.mode === "SET_PIN" ||
-            hwState.mode === "CONFIRM_PIN") && (
+          (hwState.mode === "SET_PIN" || hwState.mode === "CONFIRM_PIN") && (
             <div className="bg-muted/50 space-y-3 rounded-lg p-4">
               <p className="text-sm font-medium">
-                {hwState.mode === "SET_PIN"
-                  ? "Create PIN"
-                  : "Confirm PIN"}
+                {hwState.mode === "SET_PIN" ? "Create PIN" : "Confirm PIN"}
               </p>
               <p className="text-muted-foreground text-xs">
-                Press and release one button at a time: btn 1 = digit 1, btn
-                2 = digit 2. The digit is counted on release. Six digits
-                submit automatically. If both buttons are pressed together,
-                nothing is counted until both are released.
+                Press and release one button at a time: btn 1 = digit 1, btn 2 =
+                digit 2. The digit is counted on release. Six digits submit
+                automatically. If both buttons are pressed together, nothing is
+                counted until both are released.
               </p>
               <PinDots filled={hwState.pinProgress} />
             </div>
@@ -1735,9 +1715,9 @@ function LedgerCard({
         )}
 
         {hardwareMode && hwState.connected && isSigning && (
-          <div className="bg-amber-500/10 space-y-3 rounded-lg p-4">
-            <p className="text-sm font-medium text-amber-500">
-              Signing Transaction
+          <div className="border-primary/35 bg-primary/10 space-y-3 rounded-lg border p-4 shadow-[0_0_24px_-12px_oklch(0.55_0.1_300/28%)]">
+            <p className="text-primary text-sm font-medium">
+              Signing transaction
             </p>
             <p className="text-muted-foreground text-xs">
               Enter your PIN on the device using the two buttons.
@@ -1747,15 +1727,14 @@ function LedgerCard({
             {hwState.pinFails > 0 && (
               <p className="text-destructive text-xs">
                 {hwState.pinFails} wrong attempt
-                {hwState.pinFails > 1 ? "s" : ""} —{" "}
-                {3 - hwState.pinFails} left
+                {hwState.pinFails > 1 ? "s" : ""} — {3 - hwState.pinFails} left
               </p>
             )}
           </div>
         )}
       </CardContent>
 
-      <CardFooter className="flex flex-col gap-2">
+      <CardFooter className="flex flex-col gap-2 pb-5">
         {isBlacklisted && (
           <div className="bg-destructive/10 flex w-full items-center gap-2 rounded-lg px-3 py-2">
             <ShieldAlert className="text-destructive size-4 shrink-0" />
@@ -1802,42 +1781,8 @@ function LedgerCard({
           {sendLabel}
         </Button>
 
-        {/* Connect + Insights row */}
-        <div className="flex w-full gap-2">
-          {hasSerial && hardwareMode && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(
-                "flex-1 gap-2 text-xs transition-colors",
-                connectingHardware &&
-                  !hwState.connected &&
-                  "border border-primary/35 bg-primary/5 text-primary",
-                !hwState.connected &&
-                  !connectingHardware &&
-                  "border border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 hover:text-primary",
-                hwState.connected &&
-                  isReady &&
-                  "border-transparent text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300",
-                hwState.connected &&
-                  !isReady &&
-                  "border-transparent text-amber-500/90 hover:bg-amber-500/10",
-              )}
-              onClick={onConnect}
-              disabled={busy || connectingHardware || isBlacklisted}
-            >
-              <Usb className="size-3 shrink-0" />
-              {connectingHardware
-                ? "Connecting…"
-                : hwState.connected
-                  ? isReady
-                    ? "Connected"
-                    : `Connected — ${hwState.mode}`
-                  : "Connect a ledger"}
-            </Button>
-          )}
-
-          {hwState.connected && (
+        {hardwareMode && hwState.connected && (
+          <div className="flex w-full gap-2">
             <a
               href={`/dashboard/insights?deviceId=${encodeURIComponent(
                 hwState.logDeviceId ||
@@ -1845,14 +1790,14 @@ function LedgerCard({
               )}`}
               className={cn(
                 buttonVariants({ variant: "ghost", size: "sm" }),
-                "gap-1.5 text-xs",
+                "w-full gap-1.5 text-xs",
               )}
             >
               <BarChart2 className="size-3" />
               Insights
             </a>
-          )}
-        </div>
+          </div>
+        )}
       </CardFooter>
     </Card>
   );
@@ -1870,12 +1815,8 @@ function AddressLabel({
 }) {
   if (!addr) return <span className="text-muted-foreground">—</span>;
   if (addr === addrA)
-    return (
-      <span className="text-primary font-semibold">Ledger A</span>
-    );
+    return <span className="text-primary font-semibold">Ledger A</span>;
   if (addr === addrB)
-    return (
-      <span className="font-semibold text-violet-400">Ledger B</span>
-    );
+    return <span className="font-semibold text-violet-400">Ledger B</span>;
   return <span>{shortAddr(addr)}</span>;
 }

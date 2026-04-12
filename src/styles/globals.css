@@ -88,37 +88,40 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Space-themed dark palette */
+  --background: oklch(0.12 0.045 270);
+  --foreground: oklch(0.96 0.02 250);
+  --card: oklch(0.17 0.05 270);
+  --card-foreground: oklch(0.96 0.02 250);
+  --popover: oklch(0.16 0.06 275);
+  --popover-foreground: oklch(0.96 0.02 250);
+  --primary: oklch(0.7 0.075 298);
+  --primary-foreground: oklch(0.12 0.05 285);
+  --secondary: oklch(0.22 0.055 285);
+  --secondary-foreground: oklch(0.92 0.025 285);
+  --muted: oklch(0.22 0.04 285);
+  --muted-foreground: oklch(0.72 0.04 285);
+  --accent: oklch(0.28 0.08 295);
+  --accent-foreground: oklch(0.95 0.025 285);
+  --destructive: oklch(0.62 0.22 25);
+  --border: oklch(0.45 0.07 285 / 22%);
+  --input: oklch(0.35 0.055 285 / 35%);
+  --ring: oklch(0.58 0.09 298);
+  --chart-1: oklch(0.68 0.09 298);
+  --chart-2: oklch(0.62 0.08 288);
+  --chart-3: oklch(0.55 0.1 260);
+  --chart-4: oklch(0.45 0.08 280);
+  --chart-5: oklch(0.35 0.06 270);
+  --sidebar: oklch(0.15 0.05 275);
+  --sidebar-foreground: oklch(0.96 0.02 250);
+  --sidebar-primary: oklch(0.68 0.09 298);
+  --sidebar-primary-foreground: oklch(0.12 0.05 285);
+  --sidebar-accent: oklch(0.24 0.06 280);
+  --sidebar-accent-foreground: oklch(0.95 0.03 250);
+  --sidebar-border: oklch(0.45 0.08 270 / 22%);
+  --sidebar-ring: oklch(0.58 0.09 298);
+  --cosmic-glow-cyan: oklch(0.65 0.08 298);
+  --cosmic-glow-violet: oklch(0.52 0.09 295);
 }
 
 @layer base {
@@ -131,4 +134,178 @@
   html {
     @apply font-sans;
   }
+}
+
+/* ─── Cosmic UI accents (visual layer only) ─────────────────────────────── */
+.cosmic-ui h1,
+.cosmic-ui h2,
+.cosmic-ui h3 {
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+.cosmic-ui-body {
+  position: relative;
+}
+
+.cosmic-ambient__gradient {
+  background:
+    radial-gradient(
+      ellipse 120% 80% at 50% 100%,
+      oklch(0.2 0.06 285 / 38%) 0%,
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse 80% 50% at 20% 15%,
+      oklch(0.22 0.07 288 / 28%) 0%,
+      transparent 45%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 85% 30%,
+      oklch(0.18 0.055 298 / 24%) 0%,
+      transparent 40%
+    ),
+    oklch(0.06 0.035 285);
+}
+
+.cosmic-ambient__grid {
+  background-image:
+    linear-gradient(oklch(0.5 0.1 250 / 12%) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.5 0.1 250 / 12%) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 40%, black, transparent);
+}
+
+.cosmic-ambient__drift {
+  animation: cosmic-drift 120s linear infinite;
+}
+
+.cosmic-ambient__blob {
+  width: min(55vw, 480px);
+  height: min(55vw, 480px);
+}
+.cosmic-ambient__blob--a {
+  left: -10%;
+  top: 10%;
+  background: radial-gradient(
+    circle,
+    oklch(0.38 0.1 295 / 18%) 0%,
+    transparent 70%
+  );
+}
+.cosmic-ambient__blob--b {
+  right: -5%;
+  bottom: 0;
+  background: radial-gradient(
+    circle,
+    oklch(0.34 0.08 285 / 16%) 0%,
+    transparent 68%
+  );
+}
+
+@keyframes cosmic-drift {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate(-2%, 1%) rotate(2deg);
+  }
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+}
+
+.cosmic-star {
+  opacity: 0.35;
+  animation-name: cosmic-twinkle;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  box-shadow: 0 0 4px oklch(0.95 0.02 250 / 60%);
+}
+
+@keyframes cosmic-twinkle {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.15);
+  }
+}
+
+/* Transfer success — diagonal shooting star (top-left → bottom-right) */
+@keyframes cosmic-shooting-dash {
+  0% {
+    opacity: 0;
+    transform: rotate(39deg) translateX(-35vw) translateY(-25vh);
+  }
+  14% {
+    opacity: 0.38;
+  }
+  86% {
+    opacity: 0.34;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(39deg) translateX(130vw) translateY(95vh);
+  }
+}
+
+.cosmic-shooting-star {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: min(150vmin, 900px);
+  height: 2.5px;
+  transform-origin: left center;
+  will-change: transform, opacity;
+  animation: cosmic-shooting-dash 1.22s cubic-bezier(0.28, 0.45, 0.32, 0.94)
+    forwards;
+}
+
+.cosmic-shooting-star__streak {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    oklch(0.42 0.05 300 / 12%) 24%,
+    oklch(0.52 0.07 298 / 32%) 46%,
+    oklch(0.62 0.075 296 / 42%) 72%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 14px oklch(0.48 0.07 298 / 22%),
+    0 0 32px oklch(0.4 0.055 302 / 14%);
+  filter: blur(1.1px);
+}
+
+.cosmic-shooting-star__glow {
+  position: absolute;
+  left: 90%;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    oklch(0.72 0.065 297 / 42%) 0%,
+    oklch(0.52 0.07 300 / 18%) 52%,
+    transparent 74%
+  );
+  filter: blur(2px);
+  box-shadow: 0 0 16px oklch(0.55 0.075 298 / 28%);
+}
+
+/* Glass control panels */
+.cosmic-glass-panel {
+  @apply rounded-xl border border-primary/12 bg-card/55 shadow-[0_0_0_1px_oklch(0.55_0.06_298/14%),0_8px_40px_-12px_oklch(0.14_0.06_285/78%)] backdrop-blur-xl;
+}
+
+.cosmic-glass-header {
+  @apply border-b border-primary/12 bg-background/40 backdrop-blur-md;
 }
