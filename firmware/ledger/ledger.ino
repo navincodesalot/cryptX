@@ -38,16 +38,25 @@
  * ────────────────────────────────────────────────────
  *   On boot / META: META:SIG=<6 hex>;SALT=<16 hex>  (host stores for AUTH)
  *   PING            → PONG
- *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
+ *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>,<seed_set>,<seed_ack>
  *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
+ *   FACTORY_RESET   → FACTORY_OK — full EEPROM wipe, salt rotate, ID=A, MODE_INIT
+ *   SEED_ACK        → SEED_ACKED then enters SET_PIN (MODE_INIT + registered only)
  *   MODE <n>        → mode switch (with guards)
  *   SIGN            → PENDING (then PIN entry on device)
  *   CANCEL          → READY  (same as holding both buttons 5s while SIGNING)
- *   RECOVER         → clears EEPROM, restarts at INIT
+ *   RECOVER         → wipes + generates new seed + enters SET_PIN (requires prior SEED_OK)
+ *   SEED_VERIFY     → start 12-word index check (MODE_WIPED only)
+ *   SVI <0-2047>    → submit one expected word index (after SEED_VERIFY); 12th match → SEED_OK
  *   CHALLENGE       → NONCE:<8 hex bytes>
  *   AUTH <hex>      → STATS:<c>,<r>,<streak>,<locked>  |  AUTH_FAIL  |  AUTH_LOCKOUT
  *   RESET_STATS     → STATS_RESET
- *   UNLOCK          → UNLOCKED
+ *   UNLOCK          → UNLOCKED  (WIPED: same as RECOVER — needs SEED_OK first)
+ *
+ *   After SETID (new registration), device prints:
+ *     SEED_BEGIN / SEED_IDX:<0-2047> ×12 / SEED_END  (indices = BIP-39 English list)
+ *   SEED_VERIFY     → SVI_READY  (MODE_WIPED + seed stored)
+ *   SVI <n>         → SVI_NEXT ×11 then SEED_OK  |  SEED_BAD on wrong index
  *
  * AUTH: host sends SipHash-2-4(authKey, nonce_8_bytes) as 16 hex chars.
  * authKey is derived from chip signature + EEPROM salt + device id + runtime
@@ -70,8 +79,8 @@
  *   Plaintext:       0x0F magic (0xCC), 0x10–0x17 per-device salt
  *   XOR-masked (mask from SipHash(sig+salt, storage peppers)): all other addrs
  *
- *   0x00  1B  Device state      (0=UNINIT, 1=REGISTERED, 2=PIN_SET)
- *   0x01  1B  Device ID         (char, A-Z)
+ *   0x00  1B  Device state      (0=UNINIT, 1=REGISTERED, 2=PIN_SET) — XOR-masked
+ *   0x01  1B  Device ID         (char A-Z, plaintext — was XOR-masked in older builds)
  *   0x02  6B  PIN digits        (each byte 1 or 2)
  *   0x08  1B  PIN set flag      (0xAA = set)
  *   0x09  1B  Failed PIN attempts (0-3)
@@ -81,6 +90,10 @@
  *   0x0F  1B  Magic byte        (0xCC) — plaintext
  *   0x10  8B  Per-device salt   — plaintext
  *   0x18  1B  AUTH fail counter
+ *   0x19  1B  Seed set flag    (0xAA = 12 word indices stored) — plaintext
+ *   0x1A  24B 12× uint16 LE BIP39 word indices (0–2047) — plaintext (survives PIN wipe)
+ *   0x32  1B  Wiped flag       (0xBB = PIN-fail wiped) — plaintext (survives salt rotation)
+ *   0x33  1B  Seed host ack    (0xAA = SEED_ACK received; setup() may enter SET_PIN)
  *
  * SECRET KEY
  * ──────────
@@ -96,8 +109,6 @@
 
 rgb_lcd lcd;
 
-// ── User configuration ────────────────────────────────────────────────────────
-#define DEFAULT_ID 'A'
 
 // ── EEPROM addresses ─────────────────────────────────────────────────────────
 #define ADDR_DEV_STATE       0x00
@@ -112,9 +123,20 @@ rgb_lcd lcd;
 #define ADDR_SALT_START      0x10   // 8 bytes: 0x10–0x17  (plaintext)
 #define ADDR_SALT_END        0x17
 #define ADDR_AUTH_FAILS      0x18
+#define ADDR_SEED_FLAG       0x19
+#define ADDR_SEED_IDX0       0x1A   // 12 × uint16 LE → …0x31
+#define ADDR_WIPED_FLAG      0x32   // plaintext — survives salt rotation; 0xBB = wiped
+#define ADDR_SEED_HOST_ACK   0x33   // plaintext — 0xAA only after host SEED_ACK (never boot to SET_PIN without it)
 
 #define MAGIC_BYTE           0xCC
+#define SEED_SET_FLAG        0xAA
 #define PIN_SET_FLAG         0xAA
+#define WIPED_FLAG_VAL       0xBB
+#define SEED_HOST_ACK_VAL    0xAA
+#define DEV_STATE_UNINIT     0
+#define DEV_STATE_REGISTERED 1
+#define DEV_STATE_PIN_SET    2
+#define DEV_STATE_WIPED      3   // PIN-fail wipe — recovery required; persists across power cycles
 #define PIN_LENGTH           6
 #define MAX_PIN_FAILS        3
 #define MAX_CONSEC_REJECTS   5
@@ -139,7 +161,7 @@ enum Mode {
 };
 
 Mode          currentMode    = MODE_INIT;
-char          deviceId       = DEFAULT_ID;
+char          deviceId       = '?';   // overwritten in setup() from EEPROM or stays '?' if never registered
 String        inputBuf       = "";
 
 // PIN entry state
@@ -153,6 +175,11 @@ unsigned long signStartTime  = 0;
 // Challenge-response
 uint8_t       currentNonce[8];
 bool          nonceIssued    = false;
+
+// Seed phrase (12 BIP39 word indices 0–2047, stored plaintext in EEPROM)
+bool          recoverSeedOk  = false;
+bool          sviActive      = false;
+uint8_t       sviCount       = 0;
 
 // Derived keys (rebuilt from sig + salt + peppers at runtime)
 uint8_t       gStorageKey[16];
@@ -328,7 +355,12 @@ void printMetaLine(const uint8_t sig[3], const uint8_t salt[8]) {
 
 bool isPlainAddr(uint8_t addr) {
   if (addr == ADDR_MAGIC) return true;
+  if (addr == ADDR_DEVICE_ID) return true;  // readable letter in dumps; avoids XOR confusion after manual EEPROM pokes
   if (addr >= ADDR_SALT_START && addr <= ADDR_SALT_END) return true;
+  if (addr == ADDR_SEED_FLAG) return true;
+  if (addr >= ADDR_SEED_IDX0 && addr <= ADDR_SEED_IDX0 + 23) return true;
+  if (addr == ADDR_WIPED_FLAG) return true;
+  if (addr == ADDR_SEED_HOST_ACK) return true;
   return false;
 }
 
@@ -361,6 +393,27 @@ void eepromWrite16(uint8_t addr, uint16_t value) {
   eepromWrite(addr + 1, (uint8_t)(value >> 8));
 }
 
+/**
+ * Device ID at 0x01 is stored plaintext (see isPlainAddr). Older sketches XOR-masked
+ * this byte — after a manual EEPROM clear / partial write the XOR decode can look
+ * like a random letter (e.g. 'M'). Migrate legacy XOR → plain, or force DEFAULT_ID.
+ * Must run after deriveStorageKeysFromSigSalt() so maskByte matches stored raw.
+ */
+static void normalizeDeviceIdStorage() {
+  uint8_t raw = EEPROM.read(ADDR_DEVICE_ID);
+  if (raw >= 'A' && raw <= 'Z') return;   // already plaintext
+  if (raw == 0x00 || raw == 0xFF) return;  // blank/no-ID sentinel — leave alone
+
+  // Try one legacy XOR decode (sketches before v6 stored ID masked)
+  uint8_t legacyLogical = (uint8_t)(raw ^ maskByte(ADDR_DEVICE_ID));
+  if (legacyLogical >= 'A' && legacyLogical <= 'Z') {
+    EEPROM.write(ADDR_DEVICE_ID, legacyLogical);
+    return;
+  }
+  // Corrupt byte — clear to no-ID so setup() treats it as unregistered
+  EEPROM.write(ADDR_DEVICE_ID, 0x00);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Salt management
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -388,6 +441,8 @@ void ensureSaltWritten() {
 // EEPROM init & wipe
 // ═══════════════════════════════════════════════════════════════════════════════
 
+static void clearSeedPlain();
+
 void wipeEEPROM() {
   uint8_t salt[8];
   fillRandomSalt(salt);
@@ -399,7 +454,7 @@ void wipeEEPROM() {
   deriveStorageKeysFromSigSalt(sig, salt);
 
   eepromWrite(ADDR_DEV_STATE, 0);
-  eepromWrite(ADDR_DEVICE_ID, (uint8_t)DEFAULT_ID);
+  EEPROM.write(ADDR_DEVICE_ID, 0x00);  // 0x00 = no ID; only set by SETID command
   for (uint8_t i = 0; i < PIN_LENGTH; i++) {
     eepromWrite(ADDR_PIN_START + i, 0);
   }
@@ -409,6 +464,70 @@ void wipeEEPROM() {
   eepromWrite16(ADDR_REJECT_COUNT, 0);
   eepromWrite(ADDR_CONSEC_REJECTS, 0);
   eepromWrite(ADDR_AUTH_FAILS, 0);
+  EEPROM.write(ADDR_WIPED_FLAG, 0x00);
+  EEPROM.write(ADDR_SEED_HOST_ACK, 0x00);
+  clearSeedPlain();
+}
+
+static bool isSeedSetPlain() {
+  return EEPROM.read(ADDR_SEED_FLAG) == SEED_SET_FLAG;
+}
+
+static void clearSeedPlain() {
+  EEPROM.write(ADDR_SEED_FLAG, 0);
+  for (uint8_t i = 0; i < 24; i++) {
+    EEPROM.write(ADDR_SEED_IDX0 + i, 0);
+  }
+}
+
+static uint16_t readSeedIndex(uint8_t slot) {
+  uint8_t lo = EEPROM.read(ADDR_SEED_IDX0 + slot * 2);
+  uint8_t hi = EEPROM.read(ADDR_SEED_IDX0 + slot * 2 + 1);
+  return (uint16_t)lo | ((uint16_t)hi << 8);
+}
+
+static void writeSeedIndex(uint8_t slot, uint16_t idx) {
+  EEPROM.write(ADDR_SEED_IDX0 + slot * 2,     (uint8_t)(idx & 0xFF));
+  EEPROM.write(ADDR_SEED_IDX0 + slot * 2 + 1, (uint8_t)(idx >> 8));
+}
+
+static void generateAndStoreSeed() {
+  randomSeed(micros() ^ (uint32_t)analogRead(A0) ^ (uint32_t)millis() ^
+             (uint32_t)deviceId * 131U);
+  EEPROM.write(ADDR_SEED_FLAG, SEED_SET_FLAG);
+  for (uint8_t i = 0; i < 12; i++) {
+    writeSeedIndex(i, (uint16_t)(random() % 2048));
+  }
+}
+
+static void printSeedToSerial() {
+  Serial.println("SEED_BEGIN");
+  for (uint8_t i = 0; i < 12; i++) {
+    Serial.print("SEED_IDX:");
+    Serial.println(readSeedIndex(i));
+  }
+  Serial.println("SEED_END");
+}
+
+/** Full security wipe but keep seed indices + device ID so recovery stays possible after PIN wipe */
+static void pinFailWipePreserveSeed() {
+  uint8_t backup[26];
+  backup[0]  = EEPROM.read(ADDR_SEED_FLAG);
+  for (uint8_t i = 0; i < 24; i++) backup[1 + i] = EEPROM.read(ADDR_SEED_IDX0 + i);
+  backup[25] = EEPROM.read(ADDR_DEVICE_ID);   // plaintext — preserve so device ID survives wipe
+
+  wipeEEPROM();   // rotates salt + derives new gStorageKey; sets DEV_STATE = UNINIT, ID = 0x00
+
+  if (backup[0] == SEED_SET_FLAG) {
+    EEPROM.write(ADDR_SEED_FLAG, backup[0]);
+    for (uint8_t i = 0; i < 24; i++) EEPROM.write(ADDR_SEED_IDX0 + i, backup[1 + i]);
+  }
+  // Restore plaintext ID
+  if (backup[25] >= 'A' && backup[25] <= 'Z') EEPROM.write(ADDR_DEVICE_ID, backup[25]);
+
+  // Mark as needing recovery — persists across power cycles so reconnect goes straight to WIPED
+  eepromWrite(ADDR_DEV_STATE, DEV_STATE_WIPED);
+  EEPROM.write(ADDR_WIPED_FLAG, WIPED_FLAG_VAL);
 }
 
 void initEEPROM() {
@@ -490,7 +609,7 @@ void recordAuthFail() {
   eepromWrite(ADDR_AUTH_FAILS, f);
   if (f >= MAX_AUTH_FAILS) {
     wipeEEPROM();
-    deviceId = DEFAULT_ID;
+    deviceId = '?';
     readDeviceSignature(gChipSig);
     uint8_t s[8];
     readSaltPlain(s);
@@ -560,13 +679,23 @@ void enterMode(Mode m) {
 
     case MODE_SET_PIN:
       lcd.setRGB(255, 255, 255);
-      lcdShowPinProgress("Create PIN:", 0);
+      {
+        char hdr[17];
+        if (deviceId != '?') snprintf(hdr, sizeof(hdr), "%c: Create PIN", deviceId);
+        else                 snprintf(hdr, sizeof(hdr), "Create PIN:");
+        lcdShowPinProgress(hdr, 0);
+      }
       Serial.println("PIN_PROGRESS:0");
       break;
 
     case MODE_CONFIRM_PIN:
       lcd.setRGB(255, 255, 255);
-      lcdShowPinProgress("Confirm PIN:", 0);
+      {
+        char hdr[17];
+        if (deviceId != '?') snprintf(hdr, sizeof(hdr), "%c: Confirm PIN", deviceId);
+        else                 snprintf(hdr, sizeof(hdr), "Confirm PIN:");
+        lcdShowPinProgress(hdr, 0);
+      }
       Serial.println("PIN_PROGRESS:0");
       break;
 
@@ -661,7 +790,11 @@ void printState() {
   Serial.print(",");
   Serial.print(isPinSet() ? "1" : "0");
   Serial.print(",");
-  Serial.println(getPinFails());
+  Serial.print(getPinFails());
+  Serial.print(",");
+  Serial.print(isSeedSetPlain() ? "1" : "0");
+  Serial.print(",");
+  Serial.println(EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL ? "1" : "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -762,9 +895,9 @@ void finalizeSixDigitPin() {
       logReject();
 
       if (fails >= MAX_PIN_FAILS) {
-        wipeEEPROM();
+        pinFailWipePreserveSeed();   // preserves ID + seed, marks DEV_STATE_WIPED
         Serial.println("WIPED");
-        deviceId = DEFAULT_ID;
+        // deviceId kept as-is — it was preserved in EEPROM by pinFailWipePreserveSeed
         readDeviceSignature(gChipSig);
         uint8_t salt[8];
         readSaltPlain(salt);
@@ -801,10 +934,16 @@ void handlePinButton(uint8_t btn) {
   Serial.print("PIN_PROGRESS:");
   Serial.println(pinPos);
 
-  const char* header;
-  if (currentMode == MODE_SET_PIN) header = "Create PIN:";
-  else if (currentMode == MODE_CONFIRM_PIN) header = "Confirm PIN:";
-  else header = "Sign: Enter PIN";
+  char header[17];
+  if (currentMode == MODE_SET_PIN) {
+    if (deviceId != '?') snprintf(header, sizeof(header), "%c: Create PIN", deviceId);
+    else                 snprintf(header, sizeof(header), "Create PIN:");
+  } else if (currentMode == MODE_CONFIRM_PIN) {
+    if (deviceId != '?') snprintf(header, sizeof(header), "%c: Confirm PIN", deviceId);
+    else                 snprintf(header, sizeof(header), "Confirm PIN:");
+  } else {
+    snprintf(header, sizeof(header), "Sign: Enter PIN");
+  }
 
   lcdShowPinProgress(header, pinPos);
 
@@ -820,11 +959,12 @@ void handlePinButton(uint8_t btn) {
 void readSerial() {
   while (Serial.available()) {
     char c = (char)Serial.read();
-    if (c == '\n') {
+    // Accept LF or CR as end-of-line (Serial Monitor "Carriage return" sends CR-only — was ignored before)
+    if (c == '\n' || c == '\r') {
       inputBuf.trim();
       if (inputBuf.length() > 0) handleCmd(inputBuf);
       inputBuf = "";
-    } else if (c != '\r') {
+    } else {
       inputBuf += c;
     }
   }
@@ -834,7 +974,10 @@ void readSerial() {
 // Command handler
 // ═══════════════════════════════════════════════════════════════════════════════
 
-void handleCmd(const String& cmd) {
+void handleCmd(const String& cmdIn) {
+  String cmd = cmdIn;
+  cmd.trim();
+
   uint8_t salt[8];
   readSaltPlain(salt);
 
@@ -848,6 +991,10 @@ void handleCmd(const String& cmd) {
     printState();
 
   } else if (cmd.startsWith("SETID ")) {
+    if (currentMode == MODE_WIPED) {
+      Serial.println("ERR:WIPED");
+      return;
+    }
     if (cmd.length() != 7) {
       Serial.println("ERR:BAD_ID");
       return;
@@ -874,10 +1021,16 @@ void handleCmd(const String& cmd) {
     deviceId = newId;
     eepromWrite(ADDR_DEVICE_ID, (uint8_t)newId);
     eepromWrite(ADDR_DEV_STATE, 1);  // REGISTERED
+    EEPROM.write(ADDR_SEED_HOST_ACK, 0x00);  // must SEED_ACK before SET_PIN (incl. after reboot)
     Serial.println("ID_SAVED");
     Serial.print("DEVICE:");
     Serial.println(deviceId);
     rebuildAuthKey(gChipSig, salt, deviceId);
+
+    if (!isSeedSetPlain()) {
+      generateAndStoreSeed();
+    }
+    printSeedToSerial();
 
     if (currentMode == MODE_INIT) {
       char msg[17];
@@ -885,7 +1038,7 @@ void handleCmd(const String& cmd) {
       lcd.setRGB(255, 255, 255);
       lcdShow(msg, "Registered!");
       delay(1500);
-      enterMode(MODE_SET_PIN);
+      lcdShow("Save your seed!", "Then continue...");
     }
 
   } else if (cmd.startsWith("MODE ")) {
@@ -894,6 +1047,8 @@ void handleCmd(const String& cmd) {
       case 1:
         if (currentMode == MODE_WIPED) {
           Serial.println("ERR:WIPED");
+        } else if (EEPROM.read(ADDR_SEED_HOST_ACK) != SEED_HOST_ACK_VAL) {
+          Serial.println("ERR:NO_SEED_ACK");
         } else {
           enterMode(MODE_SET_PIN);
         }
@@ -934,15 +1089,85 @@ void handleCmd(const String& cmd) {
       Serial.println("READY");
     }
 
+  } else if (cmd == "SEED_ACK") {
+    if (currentMode != MODE_INIT || deviceId == '?') {
+      Serial.println("ERR:NOT_READY");
+      return;
+    }
+    EEPROM.write(ADDR_SEED_HOST_ACK, SEED_HOST_ACK_VAL);
+    Serial.println("SEED_ACKED");
+    enterMode(MODE_SET_PIN);
+
+  } else if (cmd == "SEED_VERIFY") {
+    if (currentMode != MODE_WIPED) {
+      Serial.println("ERR:NOT_WIPED");
+      return;
+    }
+    if (!isSeedSetPlain()) {
+      Serial.println("ERR:NO_SEED");
+      return;
+    }
+    sviActive = true;
+    sviCount    = 0;
+    recoverSeedOk = false;
+    Serial.println("SVI_READY");
+
+  } else if (cmd.startsWith("SVI ")) {
+    if (!sviActive) {
+      Serial.println("ERR:SVI");
+      return;
+    }
+    long idx = cmd.substring(4).toInt();
+    if (idx < 0 || idx > 2047) {
+      Serial.println("SEED_BAD");
+      sviActive = false;
+      sviCount  = 0;
+      return;
+    }
+    if ((uint16_t)idx != readSeedIndex(sviCount)) {
+      Serial.println("SEED_BAD");
+      sviActive = false;
+      sviCount  = 0;
+      return;
+    }
+    sviCount++;
+    if (sviCount >= 12) {
+      recoverSeedOk = true;
+      sviActive     = false;
+      sviCount      = 0;
+      Serial.println("SEED_OK");
+    } else {
+      Serial.println("SVI_NEXT");
+    }
+
   } else if (cmd == "RECOVER") {
+    if (!recoverSeedOk) {
+      Serial.println("ERR:SEED");
+      return;
+    }
+    recoverSeedOk = false;
+    sviActive     = false;
+    sviCount      = 0;
+
+    char savedId = deviceId;
     wipeEEPROM();
-    deviceId = DEFAULT_ID;
+
+    if (savedId >= 'A' && savedId <= 'Z') {
+      deviceId = savedId;
+      EEPROM.write(ADDR_DEVICE_ID, (uint8_t)savedId);
+      eepromWrite(ADDR_DEV_STATE, DEV_STATE_REGISTERED);
+    }
+
     readDeviceSignature(gChipSig);
     readSaltPlain(salt);
     deriveStorageKeysFromSigSalt(gChipSig, salt);
     rebuildAuthKey(gChipSig, salt, deviceId);
+
+    generateAndStoreSeed();
+    printSeedToSerial();
     Serial.println("RECOVERED");
     enterMode(MODE_INIT);
+    lcdShow("Save your seed!", "Then continue...");
 
   } else if (cmd == "CHALLENGE") {
     generateNonce(currentNonce);
@@ -973,20 +1198,59 @@ void handleCmd(const String& cmd) {
 
   } else if (cmd == "UNLOCK") {
     if (currentMode == MODE_WIPED) {
+      if (!recoverSeedOk) {
+        Serial.println("ERR:SEED");
+        return;
+      }
+      recoverSeedOk = false;
+      sviActive     = false;
+      sviCount      = 0;
+
+      char savedId = deviceId;
       wipeEEPROM();
-      deviceId = DEFAULT_ID;
+
+      if (savedId >= 'A' && savedId <= 'Z') {
+        deviceId = savedId;
+        EEPROM.write(ADDR_DEVICE_ID, (uint8_t)savedId);
+        eepromWrite(ADDR_DEV_STATE, DEV_STATE_REGISTERED);
+      }
+
       readDeviceSignature(gChipSig);
       readSaltPlain(salt);
       deriveStorageKeysFromSigSalt(gChipSig, salt);
       rebuildAuthKey(gChipSig, salt, deviceId);
+
+      generateAndStoreSeed();
+      printSeedToSerial();
       Serial.println("UNLOCKED");
       enterMode(MODE_INIT);
+      lcdShow("Save your seed!", "Then continue...");
     } else {
       eepromWrite(ADDR_CONSEC_REJECTS, 0);
       clearAuthFails();
       Serial.println("UNLOCKED");
       Serial.println("READY");
     }
+
+  } else if (cmd == "FACTORY_RESET") {
+    wipeEEPROM();
+    deviceId = '?';
+    readDeviceSignature(gChipSig);
+    readSaltPlain(salt);
+    deriveStorageKeysFromSigSalt(gChipSig, salt);
+    rebuildAuthKey(gChipSig, salt, deviceId);
+    recoverSeedOk = false;
+    sviActive     = false;
+    sviCount      = 0;
+    nonceIssued   = false;
+    Serial.println("FACTORY_OK");
+    Serial.print("DEVICE:");
+    Serial.println(deviceId);
+    enterMode(MODE_INIT);
+
+  } else {
+    Serial.print("ERR:UNKNOWN:");
+    Serial.println(cmd);
   }
 }
 
@@ -1001,12 +1265,15 @@ void setup() {
 
   lcd.begin(16, 2);
 
+  randomSeed(analogRead(A0) ^ (uint32_t)micros() ^ (uint32_t)millis());
+
   initEEPROM();
 
   readDeviceSignature(gChipSig);
   uint8_t salt[8];
   readSaltPlain(salt);
   deriveStorageKeysFromSigSalt(gChipSig, salt);
+  normalizeDeviceIdStorage();
 
   uint8_t storedId = eepromRead(ADDR_DEVICE_ID);
   if (storedId >= 'A' && storedId <= 'Z') {
@@ -1021,12 +1288,24 @@ void setup() {
 
   uint8_t devState = eepromRead(ADDR_DEV_STATE);
 
-  if (devState >= 2 && isPinSet()) {
+  if (EEPROM.read(ADDR_WIPED_FLAG) == WIPED_FLAG_VAL || devState == DEV_STATE_WIPED) {
+    enterMode(MODE_WIPED);
+  } else if (devState >= DEV_STATE_PIN_SET && isPinSet()) {
     enterMode(MODE_READY);
-  } else if (devState >= 1) {
-    enterMode(MODE_SET_PIN);
   } else {
+    /* Incomplete setup (incl. power loss mid–PIN): always INIT until host syncs (MODE 1 / SEED_ACK). */
     enterMode(MODE_INIT);
+  }
+
+  if (currentMode == MODE_INIT && devState >= DEV_STATE_REGISTERED &&
+      isSeedSetPlain() &&
+      EEPROM.read(ADDR_SEED_HOST_ACK) != SEED_HOST_ACK_VAL) {
+    lcdShow("Save your seed!", "Then continue...");
+  } else if (currentMode == MODE_INIT && devState >= DEV_STATE_REGISTERED &&
+             isSeedSetPlain() &&
+             EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL &&
+             !isPinSet()) {
+    lcdShow("Open cryptX app", "to resume PIN...");
   }
 
   Serial.println("READY");
