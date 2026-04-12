@@ -104,22 +104,6 @@ export default async function LandingPage() {
             </CardHeader>
           </Card>
         </section>
-
-        <footer className="text-muted-foreground mt-16 flex flex-col items-center gap-3 text-center text-sm sm:flex-row sm:justify-center sm:gap-6">
-          <a
-            href="/dashboard"
-            className="text-primary underline-offset-4 hover:underline"
-          >
-            Open dashboard
-          </a>
-          <span className="hidden sm:inline">·</span>
-          <a
-            href="/auth/logout"
-            className="underline-offset-4 hover:underline"
-          >
-            Sign out
-          </a>
-        </footer>
       </div>
     </main>
   );
