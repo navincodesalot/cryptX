@@ -93,6 +93,7 @@
  *   0x19  1B  Seed set flag    (0xAA = 12 word indices stored) — plaintext
  *   0x1A  24B 12× uint16 LE BIP39 word indices (0–2047) — plaintext (survives PIN wipe)
  *   0x32  1B  Wiped flag       (0xBB = PIN-fail wiped) — plaintext (survives salt rotation)
+ *   0x33  1B  Seed host ack    (0xAA = SEED_ACK received; setup() may enter SET_PIN)
  *
  * SECRET KEY
  * ──────────
@@ -125,11 +126,13 @@ rgb_lcd lcd;
 #define ADDR_SEED_FLAG       0x19
 #define ADDR_SEED_IDX0       0x1A   // 12 × uint16 LE → …0x31
 #define ADDR_WIPED_FLAG      0x32   // plaintext — survives salt rotation; 0xBB = wiped
+#define ADDR_SEED_HOST_ACK   0x33   // plaintext — 0xAA only after host SEED_ACK (never boot to SET_PIN without it)
 
 #define MAGIC_BYTE           0xCC
 #define SEED_SET_FLAG        0xAA
 #define PIN_SET_FLAG         0xAA
 #define WIPED_FLAG_VAL       0xBB
+#define SEED_HOST_ACK_VAL    0xAA
 #define DEV_STATE_UNINIT     0
 #define DEV_STATE_REGISTERED 1
 #define DEV_STATE_PIN_SET    2
@@ -357,6 +360,7 @@ bool isPlainAddr(uint8_t addr) {
   if (addr == ADDR_SEED_FLAG) return true;
   if (addr >= ADDR_SEED_IDX0 && addr <= ADDR_SEED_IDX0 + 23) return true;
   if (addr == ADDR_WIPED_FLAG) return true;
+  if (addr == ADDR_SEED_HOST_ACK) return true;
   return false;
 }
 
@@ -461,6 +465,7 @@ void wipeEEPROM() {
   eepromWrite(ADDR_CONSEC_REJECTS, 0);
   eepromWrite(ADDR_AUTH_FAILS, 0);
   EEPROM.write(ADDR_WIPED_FLAG, 0x00);
+  EEPROM.write(ADDR_SEED_HOST_ACK, 0x00);
   clearSeedPlain();
 }
 
@@ -1012,6 +1017,7 @@ void handleCmd(const String& cmdIn) {
     deviceId = newId;
     eepromWrite(ADDR_DEVICE_ID, (uint8_t)newId);
     eepromWrite(ADDR_DEV_STATE, 1);  // REGISTERED
+    EEPROM.write(ADDR_SEED_HOST_ACK, 0x00);  // must SEED_ACK before SET_PIN (incl. after reboot)
     Serial.println("ID_SAVED");
     Serial.print("DEVICE:");
     Serial.println(deviceId);
@@ -1037,6 +1043,8 @@ void handleCmd(const String& cmdIn) {
       case 1:
         if (currentMode == MODE_WIPED) {
           Serial.println("ERR:WIPED");
+        } else if (EEPROM.read(ADDR_SEED_HOST_ACK) != SEED_HOST_ACK_VAL) {
+          Serial.println("ERR:NO_SEED_ACK");
         } else {
           enterMode(MODE_SET_PIN);
         }
@@ -1082,6 +1090,7 @@ void handleCmd(const String& cmdIn) {
       Serial.println("ERR:NOT_READY");
       return;
     }
+    EEPROM.write(ADDR_SEED_HOST_ACK, SEED_HOST_ACK_VAL);
     Serial.println("SEED_ACKED");
     enterMode(MODE_SET_PIN);
 
@@ -1279,10 +1288,17 @@ void setup() {
     enterMode(MODE_WIPED);
   } else if (devState >= DEV_STATE_PIN_SET && isPinSet()) {
     enterMode(MODE_READY);
-  } else if (devState >= DEV_STATE_REGISTERED) {
+  } else if (devState >= DEV_STATE_REGISTERED &&
+             EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL) {
     enterMode(MODE_SET_PIN);
   } else {
     enterMode(MODE_INIT);
+  }
+
+  if (currentMode == MODE_INIT && devState >= DEV_STATE_REGISTERED &&
+      isSeedSetPlain() &&
+      EEPROM.read(ADDR_SEED_HOST_ACK) != SEED_HOST_ACK_VAL) {
+    lcdShow("Save your seed!", "Then continue...");
   }
 
   Serial.println("READY");
