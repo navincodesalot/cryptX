@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { BIP39_ENGLISH, phraseToIndices } from "@/lib/bip39Words";
+import { sendClientLedgerLog } from "@/lib/logging/clientLog";
 
 const HARDWARE_MODE =
   process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
@@ -505,6 +506,8 @@ export default function HomePage() {
     setConnectingHw(ledger);
     const setState = ledger === "A" ? setHwStateA : setHwStateB;
     const deviceRef = ledger === "A" ? deviceARef : deviceBRef;
+    /** True after `port.open` — required for MongoDB ledger log eligibility. */
+    let usbSession = false;
 
     try {
       if (!navigator.serial)
@@ -512,6 +515,18 @@ export default function HomePage() {
 
       // Close existing connection if any
       if (deviceRef.current) {
+        const prev = ledger === "A" ? hwStateA : hwStateB;
+        if (prev.connected) {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${ledger}-${prev.deviceId}`,
+              action: "DISCONNECT",
+              status: "SUCCESS",
+              metadata: { reason: "reconnect_replace" },
+            },
+            { usbConnected: true },
+          );
+        }
         await deviceRef.current.close();
         deviceRef.current = null;
         setState(INITIAL_HW);
@@ -519,6 +534,7 @@ export default function HomePage() {
 
       const port = await navigator.serial.requestPort();
       await port.open({ baudRate: 115200 });
+      usbSession = true;
 
       const device = new DeviceConnection(port);
       device.onLine = (line) => processSerialLine(line, setState);
@@ -560,6 +576,19 @@ export default function HomePage() {
         mode !== "INIT" &&
         mode !== "WIPED"
       ) {
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${ledger}-${detectedId}`,
+            action: "CONNECT",
+            status: "FAIL",
+            metadata: {
+              reason: "wrong_ledger",
+              expectedSlot: ledger,
+              reportedId: detectedId,
+            },
+          },
+          { usbConnected: true },
+        );
         await device.close();
         toast.error(
           `This device is Ledger ${detectedId}, not Ledger ${ledger}. Connect the correct device.`,
@@ -581,10 +610,31 @@ export default function HomePage() {
         signExpiresAt: null,
       });
 
+      void sendClientLedgerLog(
+        {
+          deviceId: `ledger-${ledger}-${stateDeviceId}`,
+          action: "CONNECT",
+          status: "SUCCESS",
+          metadata: { mode, baudRate: 115200 },
+        },
+        { usbConnected: true },
+      );
+
       toast.success(`Ledger ${ledger} connected — ${mode}`);
     } catch (err) {
       const name = err instanceof Error ? err.name : "";
       if (name !== "NotFoundError") {
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${ledger}-unknown`,
+            action: "CONNECT",
+            status: "FAIL",
+            metadata: {
+              error: err instanceof Error ? err.message : "Failed to connect",
+            },
+          },
+          { usbConnected: usbSession },
+        );
         toast.error(
           err instanceof Error ? err.message : "Failed to connect",
         );
@@ -859,27 +909,82 @@ export default function HomePage() {
         toast.dismiss("hw-confirm");
 
         if (result === "WIPED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "device_wiped" },
+            },
+            { usbConnected: true },
+          );
           toast.error(
             `Ledger ${from} was wiped after 3 wrong PINs! Use Recover to re-setup.`,
           );
           return;
         }
         if (result === "REJECTED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "CANCELLED",
+              metadata: { reason: "cancelled_on_device" },
+            },
+            { usbConnected: true },
+          );
           toast.error("Transaction cancelled on device");
           return;
         }
         if (result === "timeout") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "pin_timeout" },
+            },
+            { usbConnected: true },
+          );
           toast.error("Transaction timed out waiting for PIN");
           return;
         }
         if (result.startsWith("ERR:")) {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "device_error", detail: result },
+            },
+            { usbConnected: true },
+          );
           toast.error(result);
           return;
         }
         if (result !== "CONFIRMED") {
+          void sendClientLedgerLog(
+            {
+              deviceId: `ledger-${from}-${hw.deviceId}`,
+              action: "SIGN_TX",
+              status: "FAIL",
+              metadata: { reason: "unexpected", detail: result },
+            },
+            { usbConnected: true },
+          );
           toast.error(`Unexpected: ${result}`);
           return;
         }
+
+        void sendClientLedgerLog(
+          {
+            deviceId: `ledger-${from}-${hw.deviceId}`,
+            action: "SIGN_TX",
+            status: "SUCCESS",
+            metadata: { amount: 0.01, asset: "SOL", cluster: "testnet" },
+          },
+          { usbConnected: true },
+        );
       }
 
       const res = await fetch("/api/transfer", {
@@ -962,6 +1067,13 @@ export default function HomePage() {
                 buttonVariants({ variant: "outline", size: "sm" }),
                 "inline-flex gap-1.5",
               )}
+              onClick={() => {
+                void fetch("/api/session/log", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ event: "logout" }),
+                });
+              }}
             >
               <LogOut className="size-3.5" />
               Log out

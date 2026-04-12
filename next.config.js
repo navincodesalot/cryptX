@@ -4,6 +4,23 @@
  */
 
 /** @type {import("next").NextConfig} */
-const config = {};
+const config = {
+  async rewrites() {
+    return [
+      { source: "/log", destination: "/api/log" },
+      { source: "/logs", destination: "/api/logs" },
+      { source: "/logs/:id", destination: "/api/logs/:id" },
+      {
+        source: "/security/blacklist",
+        destination: "/api/security/blacklist",
+      },
+      {
+        source: "/security/analyze",
+        destination: "/api/security/analyze",
+      },
+      { source: "/audit/report", destination: "/api/audit/report" },
+    ];
+  },
+};
 
 export default config;

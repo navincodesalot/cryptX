@@ -4,7 +4,10 @@ import {
   PublicKey,
   type ParsedTransactionWithMeta,
 } from "@solana/web3.js";
+
+import { safeIngestLedgerEvent } from "@/lib/logging/ingest";
 import { getConnection } from "@/lib/solana";
+import { getAuditDeviceId, isRequestBlocked } from "@/lib/security/requestGate";
 
 export interface TxRecord {
   signature: string;
@@ -53,7 +56,11 @@ async function getHistory(pubkey: PublicKey, limit = 10): Promise<TxRecord[]> {
         "type" in ix.parsed &&
         ix.parsed.type === "transfer"
       ) {
-        const info = (ix.parsed as { info: { source: string; destination: string; lamports: number } }).info;
+        const info = (
+          ix.parsed as {
+            info: { source: string; destination: string; lamports: number };
+          }
+        ).info;
         from = info.source;
         to = info.destination;
         amount = info.lamports / LAMPORTS_PER_SOL;
@@ -76,7 +83,12 @@ async function getHistory(pubkey: PublicKey, limit = 10): Promise<TxRecord[]> {
   return records;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { ip, deviceId } = await getAuditDeviceId(req);
+  if (await isRequestBlocked(ip, deviceId)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const pubA = new PublicKey(process.env.WALLET_A_PUBLIC ?? "");
     const pubB = new PublicKey(process.env.WALLET_B_PUBLIC ?? "");
@@ -86,7 +98,6 @@ export async function GET() {
       getHistory(pubB, 8),
     ]);
 
-    // Merge and sort by slot desc, deduplicate by signature
     const seen = new Set<string>();
     const merged: TxRecord[] = [];
     for (const tx of [...histA, ...histB]) {
@@ -97,9 +108,33 @@ export async function GET() {
     }
     merged.sort((a, b) => b.slot - a.slot);
 
+    await safeIngestLedgerEvent(
+      {
+        ipAddress: ip,
+        deviceId,
+        action: "HISTORY_FETCH",
+        status: "SUCCESS",
+        metadata: {
+          route: "/api/history",
+          count: merged.length,
+        },
+      },
+      { ingestion: "server" },
+    );
+
     return NextResponse.json({ transactions: merged.slice(0, 12) });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    await safeIngestLedgerEvent(
+      {
+        ipAddress: ip,
+        deviceId,
+        action: "HISTORY_FETCH",
+        status: "FAIL",
+        metadata: { route: "/api/history", error: message },
+      },
+      { ingestion: "server" },
+    );
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
