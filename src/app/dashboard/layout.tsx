@@ -2,6 +2,8 @@ import { auth0 } from "@/lib/auth0";
 import { getIpFromIncomingHeaders } from "@/lib/http/serverIp";
 import { safeIngestLedgerEvent } from "@/lib/logging/ingest";
 
+import { DashboardChrome } from "./dashboard-chrome";
+
 export default async function DashboardLayout({
   children,
 }: {
@@ -25,5 +27,5 @@ export default async function DashboardLayout({
     );
   }
 
-  return children;
+  return <DashboardChrome>{children}</DashboardChrome>;
 }

@@ -11,7 +11,6 @@ import {
   Cpu,
   Download,
   ExternalLink,
-  KeyRound,
   LogOut,
   RefreshCw,
   RotateCcw,
@@ -42,6 +41,10 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { BIP39_ENGLISH, phraseToIndices } from "@/lib/bip39Words";
+import {
+  canonicalLedgerDeviceId,
+  parseMetaSaltHex,
+} from "@/lib/ledgerDeviceId";
 import { sendClientLedgerLog } from "@/lib/logging/clientLog";
 
 const HARDWARE_MODE =
@@ -82,6 +85,8 @@ interface HwState {
   connected: boolean;
   mode: string;
   deviceId: string;
+  /** Mongo log chain id — canonical, no UI slot prefix (see `canonicalLedgerDeviceId`). */
+  logDeviceId: string;
   pinSet: boolean;
   pinFails: number;
   /** From STATE line when firmware sends 6+ fields (else false after legacy 4-field STATE). */
@@ -98,6 +103,7 @@ const INITIAL_HW: HwState = {
   connected: false,
   mode: "UNKNOWN",
   deviceId: "?",
+  logDeviceId: "",
   pinSet: false,
   pinFails: 0,
   seedSet: false,
@@ -289,7 +295,16 @@ function processSerialLine(
   setState: React.Dispatch<React.SetStateAction<HwState>>,
   ledger: "A" | "B",
   getHwState: () => HwState,
+  getLedgerLogId: () => string | null,
 ) {
+  const logId = () => {
+    const refId = getLedgerLogId();
+    if (refId) return refId;
+    const hw = getHwState();
+    return (
+      hw.logDeviceId || canonicalLedgerDeviceId(hw.deviceId, null)
+    );
+  };
   if (line.startsWith("STATE:")) {
     const parts = line.slice(6).split(",");
     const full = parseFullStateLine(line);
@@ -333,7 +348,7 @@ function processSerialLine(
     if (hw.mode === "SIGNING") {
       void sendClientLedgerLog(
         {
-          deviceId: `ledger-${ledger}-${hw.deviceId}`,
+          deviceId: logId(),
           action: "AUTH_FAIL",
           status: "FAIL",
           metadata: { reason: "wrong_pin", attemptsLeft: left },
@@ -350,7 +365,7 @@ function processSerialLine(
     const hw = getHwState();
     void sendClientLedgerLog(
       {
-        deviceId: `ledger-${ledger}-${hw.deviceId}`,
+        deviceId: logId(),
         action: "SIGN_TX",
         status: "FAIL",
         metadata: { reason: "device_wiped" },
@@ -460,6 +475,9 @@ export default function HomePage() {
 
   const deviceARef = useRef<DeviceConnection | null>(null);
   const deviceBRef = useRef<DeviceConnection | null>(null);
+  /** Canonical Mongo log id; set before `onLine` so early serial events use the right key. */
+  const ledgerLogIdARef = useRef<string | null>(null);
+  const ledgerLogIdBRef = useRef<string | null>(null);
 
   /** Must not read `navigator` during SSR — it differs on client (Web Serial) and causes hydration mismatches. */
   const [hasSerial, setHasSerial] = useState(false);
@@ -550,7 +568,9 @@ export default function HomePage() {
         if (prev.connected) {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${ledger}-${prev.deviceId}`,
+              deviceId:
+                prev.logDeviceId ||
+                canonicalLedgerDeviceId(prev.deviceId, null),
               action: "DISCONNECT",
               status: "SUCCESS",
               metadata: { reason: "reconnect_replace" },
@@ -560,6 +580,8 @@ export default function HomePage() {
         }
         await deviceRef.current.close();
         deviceRef.current = null;
+        if (ledger === "A") ledgerLogIdARef.current = null;
+        else ledgerLogIdBRef.current = null;
         setState(INITIAL_HW);
       }
 
@@ -568,20 +590,19 @@ export default function HomePage() {
       usbSession = true;
 
       const device = new DeviceConnection(port);
+      const logRef =
+        ledger === "A" ? ledgerLogIdARef : ledgerLogIdBRef;
       const getHw = () => (ledger === "A" ? hwStateA : hwStateB);
-      device.onLine = (line) => processSerialLine(line, setState, ledger, getHw);
+      // Defer `onLine` until canonical id exists so logs never use UI-slot–based keys.
       await device.start();
 
-      // Wait for greeting
       const deviceLine = await device
         .waitFor((l) => l.startsWith("DEVICE:"), 5000)
         .catch(() => null);
       const detectedId = deviceLine ? deviceLine.slice(7) : "?";
 
-      // Wait for READY
       await device.waitFor((l) => l === "READY", 5000).catch(() => null);
 
-      // Get full state
       await device.send("STATE");
       const stateLine = await device
         .waitFor(
@@ -600,6 +621,21 @@ export default function HomePage() {
       const seedHostAck = parsedState?.seedHostAck ?? false;
       const stateDeviceId = parsedState?.deviceId ?? detectedId;
 
+      await device.send("META");
+      const metaLine = await device
+        .waitFor((l) => l.startsWith("META:"), 3000)
+        .catch(() => null);
+      const metaSalt = metaLine ? parseMetaSaltHex(metaLine) : null;
+
+      const canonicalId = canonicalLedgerDeviceId(
+        stateDeviceId,
+        metaSalt,
+      );
+      const idForWrongSlotLog = canonicalLedgerDeviceId(
+        detectedId,
+        metaSalt,
+      );
+
       // Enforce A/B match in hardware mode — skip for INIT/WIPED where ID may not yet be set
       if (
         HARDWARE_MODE &&
@@ -610,7 +646,7 @@ export default function HomePage() {
       ) {
         void sendClientLedgerLog(
           {
-            deviceId: `ledger-${ledger}-${detectedId}`,
+            deviceId: idForWrongSlotLog,
             action: "CONNECT",
             status: "FAIL",
             metadata: {
@@ -623,13 +659,13 @@ export default function HomePage() {
         );
         await device.close();
         toast.error(
-          `This device is Ledger ${detectedId}, not Ledger ${ledger}. Connect the correct device.`,
+          `This device is the wrong ledger. Connect the correct one.`,
         );
         return;
       }
 
       const blCheck = await fetch(
-        `/api/security/blacklist/check?deviceId=ledger-${ledger}-${stateDeviceId}`,
+        `/api/security/blacklist/check?deviceId=${encodeURIComponent(canonicalId)}`,
       );
       const blData = (await blCheck.json()) as {
         blacklisted: boolean;
@@ -647,13 +683,27 @@ export default function HomePage() {
       setBlacklistedDevice(null);
 
       deviceRef.current = device;
+      logRef.current = canonicalId;
+
+      device.onLine = (line) =>
+        processSerialLine(
+          line,
+          setState,
+          ledger,
+          getHw,
+          () => logRef.current,
+        );
 
       device.onDisconnect = () => {
-        const getHw = ledger === "A" ? hwStateA : hwStateB;
-        const duringSigning = getHw.signExpiresAt != null && getHw.signExpiresAt > Date.now();
+        const hwSnap = ledger === "A" ? hwStateA : hwStateB;
+        const duringSigning =
+          hwSnap.signExpiresAt != null &&
+          hwSnap.signExpiresAt > Date.now();
+        const disconnectId = logRef.current;
+        logRef.current = null;
         void sendClientLedgerLog(
           {
-            deviceId: `ledger-${ledger}-${stateDeviceId}`,
+            deviceId: disconnectId ?? "ledger-unknown",
             action: "DISCONNECT",
             status: "FAIL",
             metadata: { reason: "port_closed", during_signing: duringSigning },
@@ -667,6 +717,7 @@ export default function HomePage() {
         connected: true,
         mode,
         deviceId: stateDeviceId,
+        logDeviceId: canonicalId,
         pinSet,
         pinFails,
         seedSet,
@@ -678,7 +729,7 @@ export default function HomePage() {
 
       void sendClientLedgerLog(
         {
-          deviceId: `ledger-${ledger}-${stateDeviceId}`,
+          deviceId: canonicalId,
           action: "CONNECT",
           status: "SUCCESS",
           metadata: { mode, baudRate: 115200 },
@@ -886,9 +937,12 @@ export default function HomePage() {
 
       const words = parseSeedLinesToWords(buf);
       const hw = ledger === "A" ? hwStateA : hwStateB;
+      const logDev =
+        hw.logDeviceId ||
+        canonicalLedgerDeviceId(hw.deviceId, null);
       void sendClientLedgerLog(
         {
-          deviceId: `ledger-${ledger}-${hw.deviceId}`,
+          deviceId: logDev,
           action: "CONNECT",
           status: "SUCCESS",
           metadata: { recovered: true },
@@ -917,6 +971,9 @@ export default function HomePage() {
         const device =
           from === "A" ? deviceARef.current : deviceBRef.current;
         const hw = from === "A" ? hwStateA : hwStateB;
+        const logDev =
+          hw.logDeviceId ||
+          canonicalLedgerDeviceId(hw.deviceId, null);
 
         if (!device || !hw.connected) {
           toast.error(`Connect Ledger ${from} first`);
@@ -953,7 +1010,7 @@ export default function HomePage() {
         if (result === "WIPED") {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${from}-${hw.deviceId}`,
+              deviceId: logDev,
               action: "SIGN_TX",
               status: "FAIL",
               metadata: { reason: "device_wiped" },
@@ -968,7 +1025,7 @@ export default function HomePage() {
         if (result === "REJECTED") {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${from}-${hw.deviceId}`,
+              deviceId: logDev,
               action: "SIGN_TX",
               status: "CANCELLED",
               metadata: { reason: "cancelled_on_device" },
@@ -981,7 +1038,7 @@ export default function HomePage() {
         if (result === "timeout") {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${from}-${hw.deviceId}`,
+              deviceId: logDev,
               action: "SIGN_TX",
               status: "FAIL",
               metadata: { reason: "pin_timeout" },
@@ -994,7 +1051,7 @@ export default function HomePage() {
         if (result.startsWith("ERR:")) {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${from}-${hw.deviceId}`,
+              deviceId: logDev,
               action: "SIGN_TX",
               status: "FAIL",
               metadata: { reason: "device_error", detail: result },
@@ -1007,7 +1064,7 @@ export default function HomePage() {
         if (result !== "CONFIRMED") {
           void sendClientLedgerLog(
             {
-              deviceId: `ledger-${from}-${hw.deviceId}`,
+              deviceId: logDev,
               action: "SIGN_TX",
               status: "FAIL",
               metadata: { reason: "unexpected", detail: result },
@@ -1020,7 +1077,7 @@ export default function HomePage() {
 
         void sendClientLedgerLog(
           {
-            deviceId: `ledger-${from}-${hw.deviceId}`,
+            deviceId: logDev,
             action: "SIGN_TX",
             status: "SUCCESS",
             metadata: { amount, asset: "SOL", cluster: "testnet" },
@@ -1067,59 +1124,33 @@ export default function HomePage() {
 
   /* ── Render ────────────────────────────────────────────────────────────── */
   return (
-    <main className="bg-background text-foreground min-h-screen p-6 md:p-10">
+    <main className="bg-background text-foreground p-6 md:p-10">
       <div className="mx-auto max-w-4xl space-y-8">
-        {/* Header */}
-        <header className="flex items-start justify-between">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight">
-              crypt<span className="text-primary">X</span>
+            <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+              Wallet
             </h1>
             <p className="text-muted-foreground text-sm">
               DIY Hardware Wallet Network
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {HARDWARE_MODE && (
-              <Badge variant="outline" className="gap-1.5">
-                <KeyRound className="size-3" />
-                Hardware Mode
-              </Badge>
-            )}
-            <Badge variant="outline" className="gap-1.5">
-              <span className="size-2 animate-pulse rounded-full bg-emerald-400" />
-              Solana Testnet
-            </Badge>
+          <div className="flex shrink-0 items-center gap-2">
             <Button
-              variant="ghost"
-              size="icon"
+              variant="outline"
+              size="sm"
               onClick={refreshAll}
               disabled={loadingBalances || loadingHistory}
-              title="Refresh"
+              title="Refresh balances and history"
             >
               <RefreshCw
                 className={cn(
+                  "size-4",
                   (loadingBalances || loadingHistory) && "animate-spin",
                 )}
               />
+              <span className="ml-2">Refresh</span>
             </Button>
-            <a
-              href="/auth/logout"
-              className={cn(
-                buttonVariants({ variant: "outline", size: "sm" }),
-                "inline-flex gap-1.5",
-              )}
-              onClick={() => {
-                void fetch("/api/session/log", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ event: "logout" }),
-                });
-              }}
-            >
-              <LogOut className="size-3.5" />
-              Log out
-            </a>
           </div>
         </header>
 
@@ -1296,8 +1327,8 @@ export default function HomePage() {
                 Backup Your Seed Phrase
               </h2>
               <p className="text-muted-foreground text-sm">
-                These words were generated on your Arduino and the indices are
-                stored in device memory. This page maps them to the standard
+                These words were generated on your ledger device and the indices
+                are stored in device memory. This page maps them to the standard
                 BIP-39 English list. Write them down in order — you need them
                 after a PIN wipe. Never share them with anyone.
               </p>
@@ -1462,8 +1493,8 @@ export default function HomePage() {
             </div>
             <p className="text-muted-foreground text-xs">
               If support removed your device from the block list, tap Try again
-              and connect your Arduino again — the port opens as soon as the
-              check passes.
+              and connect your ledger again — the port opens as soon as the check
+              passes.
             </p>
           </div>
         </div>
@@ -1574,7 +1605,12 @@ function LedgerCard({
                 }
               />
             )}
-            <Badge variant="secondary">Arduino #{index}</Badge>
+            <Badge
+              variant="outline"
+              className="border-primary/35 bg-primary/10 font-medium text-primary"
+            >
+              Ledger {index}
+            </Badge>
           </div>
         </div>
         <CardDescription className="font-mono text-xs">
@@ -1597,10 +1633,14 @@ function LedgerCard({
 
         {/* ── Hardware status overlay ────────────────────────── */}
         {hardwareMode && !hwState.connected && (
-          <div className="bg-muted/50 flex flex-col items-center gap-3 rounded-lg py-6">
-            <Usb className="text-muted-foreground size-8" />
-            <p className="text-muted-foreground text-sm">
-              Connect your Arduino to begin
+          <div className="border-primary/25 bg-primary/5 flex flex-col items-center gap-3 rounded-lg border py-6">
+            <Usb className="text-primary size-8" />
+            <p className="text-center text-sm">
+              <span className="text-primary font-medium">Connect a ledger</span>
+              <span className="text-muted-foreground">
+                {" "}
+                below to begin
+              </span>
             </p>
           </div>
         )}
@@ -1640,7 +1680,7 @@ function LedgerCard({
             <div className="bg-muted/50 space-y-3 rounded-lg p-4">
               <p className="text-sm font-medium">Device Setup</p>
               <p className="text-muted-foreground text-xs">
-                Register this Arduino as Ledger {index}
+                Register this device as Ledger {index}
               </p>
               <Button
                 size="sm"
@@ -1769,28 +1809,40 @@ function LedgerCard({
               variant="ghost"
               size="sm"
               className={cn(
-                "flex-1 gap-2 text-xs",
+                "flex-1 gap-2 text-xs transition-colors",
+                connectingHardware &&
+                  !hwState.connected &&
+                  "border border-primary/35 bg-primary/5 text-primary",
+                !hwState.connected &&
+                  !connectingHardware &&
+                  "border border-primary/40 bg-primary/5 text-primary hover:bg-primary/10 hover:text-primary",
                 hwState.connected &&
                   isReady &&
-                  "text-emerald-400 hover:text-emerald-300",
+                  "border-transparent text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300",
+                hwState.connected &&
+                  !isReady &&
+                  "border-transparent text-amber-500/90 hover:bg-amber-500/10",
               )}
               onClick={onConnect}
               disabled={busy || connectingHardware || isBlacklisted}
             >
-              <Usb className="size-3" />
+              <Usb className="size-3 shrink-0" />
               {connectingHardware
                 ? "Connecting…"
                 : hwState.connected
                   ? isReady
                     ? "Connected"
                     : `Connected — ${hwState.mode}`
-                  : "Connect Arduino"}
+                  : "Connect a ledger"}
             </Button>
           )}
 
           {hwState.connected && (
             <a
-              href={`/dashboard/insights?deviceId=ledger-${index}-${hwState.deviceId}`}
+              href={`/dashboard/insights?deviceId=${encodeURIComponent(
+                hwState.logDeviceId ||
+                  canonicalLedgerDeviceId(hwState.deviceId, null),
+              )}`}
               className={cn(
                 buttonVariants({ variant: "ghost", size: "sm" }),
                 "gap-1.5 text-xs",

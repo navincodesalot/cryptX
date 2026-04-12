@@ -4,7 +4,6 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
-  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -177,18 +176,24 @@ function InsightsPage() {
 
   if (!deviceId || !deviceId.startsWith("ledger-")) {
     return (
-      <main className="bg-background text-foreground flex min-h-screen items-center justify-center p-6">
-        <Card className="max-w-sm">
-          <CardContent className="space-y-4 py-8 text-center">
-            <p className="text-muted-foreground text-sm">
-              No device selected. Connect a ledger from the dashboard first.
+      <main className="bg-background text-foreground flex min-h-[60vh] items-center justify-center p-6">
+        <Card className="max-w-md border-primary/20">
+          <CardContent className="space-y-4 py-10 text-center">
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              Open <span className="text-primary font-medium">Wallet</span>, connect
+              a ledger, then use{" "}
+              <span className="text-primary font-medium">Insights</span> from that
+              card — or add{" "}
+              <code className="bg-muted rounded px-1.5 py-0.5 font-mono text-xs">
+                ?deviceId=ledger-A-…
+              </code>{" "}
+              to the URL.
             </p>
             <a
               href="/dashboard"
-              className={buttonVariants({ variant: "outline" })}
+              className={buttonVariants({ variant: "default", size: "lg" })}
             >
-              <ArrowLeft className="mr-2 size-4" />
-              Back to Dashboard
+              Go to Wallet
             </a>
           </CardContent>
         </Card>
@@ -201,22 +206,14 @@ function InsightsPage() {
     : null;
 
   return (
-    <main className="bg-background text-foreground min-h-screen p-6 md:p-10">
+    <main className="bg-background text-foreground p-6 pb-12 md:p-10">
       <div className="mx-auto max-w-4xl space-y-8">
-        {/* Header */}
-        <header className="flex items-start justify-between">
-          <div className="space-y-1">
-            <a
-              href="/dashboard"
-              className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 text-sm transition-colors"
-            >
-              <ArrowLeft className="size-3.5" />
-              Dashboard
-            </a>
-            <h1 className="text-2xl font-bold tracking-tight">
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-2">
+            <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
               Device Insights
             </h1>
-            <p className="text-muted-foreground font-mono text-xs">
+            <p className="text-muted-foreground font-mono text-xs break-all md:text-sm">
               {deviceId}
             </p>
           </div>
