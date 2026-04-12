@@ -11,6 +11,7 @@ import {
   Download,
   ExternalLink,
   LogOut,
+  Plus,
   RefreshCw,
   RotateCcw,
   ShieldAlert,
@@ -406,7 +407,7 @@ function PinDots({ filled }: { filled: number }) {
           className={cn(
             "size-3 rounded-full border transition-all",
             i < filled
-              ? "scale-110 border-primary bg-primary/90 shadow-[0_0_12px_oklch(0.62_0.14_300/55%)]"
+              ? "border-primary bg-primary/90 scale-110 shadow-[0_0_12px_oklch(0.62_0.14_300/55%)]"
               : "border-muted-foreground/40 bg-transparent",
           )}
         />
@@ -469,6 +470,9 @@ export default function HomePage() {
   } | null>(null);
   const [sendAmountA, setSendAmountA] = useState("0.01");
   const [sendAmountB, setSendAmountB] = useState("0.01");
+  const [addLedgerModalOpen, setAddLedgerModalOpen] = useState(false);
+  const [addLedgerName, setAddLedgerName] = useState("");
+  const [addLedgerSlot, setAddLedgerSlot] = useState("C");
 
   const deviceARef = useRef<DeviceConnection | null>(null);
   const deviceBRef = useRef<DeviceConnection | null>(null);
@@ -1104,7 +1108,17 @@ export default function HomePage() {
                 Hardware wallets · Solana testnet
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground gap-1.5"
+                onClick={() => setAddLedgerModalOpen(true)}
+              >
+                <Plus className="size-3.5" />
+                Add new ledger
+              </Button>
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -1297,7 +1311,7 @@ export default function HomePage() {
                                   href={`https://explorer.solana.com/tx/${tx.signature}?cluster=testnet`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-muted-foreground hover:text-foreground inline-flex rounded p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                                  className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex rounded p-1 focus-visible:ring-2 focus-visible:outline-none"
                                   aria-label="View transaction on Solana Explorer"
                                 />
                               }
@@ -1335,6 +1349,97 @@ export default function HomePage() {
             )}
           </section>
         </div>
+
+        {/* ── Add ledger (form UI only) ────────────────────────────────── */}
+        {addLedgerModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button
+              type="button"
+              className="bg-background/80 fixed inset-0 cursor-default backdrop-blur-sm"
+              aria-label="Close dialog"
+              onClick={() => {
+                setAddLedgerModalOpen(false);
+                setAddLedgerName("");
+                setAddLedgerSlot("C");
+              }}
+            />
+            <div className="bg-popover ring-foreground/10 relative z-10 flex w-full max-w-md flex-col gap-4 rounded-xl p-6 shadow-lg ring-1">
+              <div className="flex flex-col gap-1">
+                <h2 className="font-heading text-base leading-none font-medium">
+                  Add new ledger
+                </h2>
+                <p className="text-muted-foreground text-sm">
+                  Connect another device and give it a label for this workspace.
+                </p>
+              </div>
+              <form
+                className="flex flex-col gap-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setAddLedgerModalOpen(false);
+                  setAddLedgerName("");
+                  setAddLedgerSlot("C");
+                }}
+              >
+                <div className="space-y-2">
+                  <label
+                    htmlFor="add-ledger-name"
+                    className="text-sm leading-none font-medium"
+                  >
+                    Display name
+                  </label>
+                  <Input
+                    id="add-ledger-name"
+                    name="name"
+                    autoComplete="off"
+                    placeholder="e.g. Travel, Treasury"
+                    value={addLedgerName}
+                    onChange={(e) => setAddLedgerName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label
+                    htmlFor="add-ledger-slot"
+                    className="text-sm leading-none font-medium"
+                  >
+                    Slot
+                  </label>
+                  <select
+                    id="add-ledger-slot"
+                    name="slot"
+                    value={addLedgerSlot}
+                    onChange={(e) => setAddLedgerSlot(e.target.value)}
+                    className={cn(
+                      "border-input bg-background/80 dark:bg-input/30 h-8 w-full rounded-lg border px-2.5 text-sm outline-none",
+                      "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+                    )}
+                  >
+                    <option value="C">Ledger C</option>
+                    <option value="D">Ledger D</option>
+                    <option value="E">Ledger E</option>
+                  </select>
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setAddLedgerModalOpen(false);
+                      setAddLedgerName("");
+                      setAddLedgerSlot("C");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm">
+                    Add ledger
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* ── Seed Phrase Backup Modal ─────────────────────────────────── */}
         {seedBackupModal && (
@@ -1602,7 +1707,7 @@ function LedgerCard({
       size="sm"
       className="flex w-full min-w-0 flex-col gap-2 py-3 has-data-[slot=card-footer]:pb-0"
     >
-      <CardHeader className="gap-0.5 px-3 pb-2 pt-0 [.border-b]:pb-2">
+      <CardHeader className="gap-0.5 px-3 pt-0 pb-2 [.border-b]:pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-1.5 text-sm">
             <Cpu className="text-primary size-3.5" />
@@ -1655,7 +1760,7 @@ function LedgerCard({
       <CardContent className="space-y-3 px-3">
         {/* ── Balance (always shown) ─────────────────────────── */}
         <div>
-          <p className="text-3xl font-bold tabular-nums leading-none md:text-4xl">
+          <p className="text-3xl leading-none font-bold tabular-nums md:text-4xl">
             {loading || wallet === null ? (
               <span className="text-muted-foreground text-2xl">—</span>
             ) : (
@@ -1805,7 +1910,7 @@ function LedgerCard({
         )}
       </CardContent>
 
-      <CardFooter className="flex flex-col gap-1.5 px-3 pb-3 pt-2">
+      <CardFooter className="flex flex-col gap-1.5 px-3 pt-2 pb-3">
         {isBlacklisted && (
           <div className="bg-destructive/10 flex w-full items-center gap-2 rounded-lg px-3 py-2">
             <ShieldAlert className="text-destructive size-4 shrink-0" />
@@ -1873,4 +1978,3 @@ function LedgerCard({
     </Card>
   );
 }
-
