@@ -81,6 +81,9 @@ interface HwState {
   deviceId: string;
   pinSet: boolean;
   pinFails: number;
+  /** From STATE line when firmware sends 6+ fields (else false after legacy 4-field STATE). */
+  seedSet: boolean;
+  seedHostAck: boolean;
   pinProgress: number;
   /** 1–5 = device-reported seconds left for hold-to-cancel; null = idle */
   signCancelHold: number | null;
@@ -94,6 +97,8 @@ const INITIAL_HW: HwState = {
   deviceId: "?",
   pinSet: false,
   pinFails: 0,
+  seedSet: false,
+  seedHostAck: false,
   pinProgress: 0,
   signCancelHold: null,
   signExpiresAt: null,
@@ -227,6 +232,29 @@ class DeviceConnection {
  * Must not use waitFor() for SEED_IDX lines — they can arrive in the same USB chunk
  * before any microtask runs, so those lines would be dropped.
  */
+/** Parses STATE:mode,id,pin_set,fails[,seed_set,seed_host_ack] from firmware. */
+function parseFullStateLine(line: string): {
+  mode: string;
+  deviceId: string;
+  pinSet: boolean;
+  pinFails: number;
+  seedSet: boolean;
+  seedHostAck: boolean;
+} | null {
+  if (!line.startsWith("STATE:")) return null;
+  const parts = line.slice(6).split(",");
+  if (parts.length < 4) return null;
+  const mode = parts[0] ?? "UNKNOWN";
+  const deviceId = parts[1] ?? "?";
+  const pinSet = (parts[2] ?? "0") === "1";
+  const pinFails = parseInt(parts[3] ?? "0", 10) || 0;
+  const seedSet =
+    parts.length >= 6 ? (parts[4] ?? "0") === "1" : false;
+  const seedHostAck =
+    parts.length >= 6 ? (parts[5] ?? "0") === "1" : false;
+  return { mode, deviceId, pinSet, pinFails, seedSet, seedHostAck };
+}
+
 function parseSeedLinesToWords(buffer: string[]): string[] {
   const start = buffer.indexOf("SEED_BEGIN");
   const end = buffer.indexOf("SEED_END");
@@ -258,11 +286,10 @@ function processSerialLine(
 ) {
   if (line.startsWith("STATE:")) {
     const parts = line.slice(6).split(",");
-    if (parts.length >= 4) {
-      const mode = parts[0] ?? "UNKNOWN";
-      const deviceId = parts[1] ?? "?";
-      const pinSet = (parts[2] ?? "0") === "1";
-      const pinFails = parseInt(parts[3] ?? "0", 10) || 0;
+    const full = parseFullStateLine(line);
+    if (full) {
+      const { mode, deviceId, pinSet, pinFails, seedSet, seedHostAck } =
+        full;
       const signing = mode === "SIGNING";
       setState((p) => ({
         ...p,
@@ -270,6 +297,8 @@ function processSerialLine(
         deviceId,
         pinSet,
         pinFails,
+        seedSet,
+        seedHostAck,
         pinProgress: signing ? p.pinProgress : 0,
         signCancelHold: null,
         signExpiresAt: signing ? Date.now() + SIGN_SESSION_MS : null,
@@ -512,18 +541,15 @@ export default function HomePage() {
         )
         .catch(() => null);
 
-      let mode = "UNKNOWN";
-      let pinSet = false;
-      let pinFails = 0;
-
-      if (stateLine) {
-        const parts = stateLine.slice(6).split(",");
-        if (parts.length >= 4) {
-          mode = parts[0] ?? "UNKNOWN";
-          pinSet = (parts[2] ?? "0") === "1";
-          pinFails = parseInt(parts[3] ?? "0", 10) || 0;
-        }
-      }
+      const parsedState = stateLine
+        ? parseFullStateLine(stateLine)
+        : null;
+      const mode = parsedState?.mode ?? "UNKNOWN";
+      const pinSet = parsedState?.pinSet ?? false;
+      const pinFails = parsedState?.pinFails ?? 0;
+      const seedSet = parsedState?.seedSet ?? false;
+      const seedHostAck = parsedState?.seedHostAck ?? false;
+      const stateDeviceId = parsedState?.deviceId ?? detectedId;
 
       // Enforce A/B match in hardware mode — skip for INIT/WIPED where ID may not yet be set
       if (
@@ -544,9 +570,11 @@ export default function HomePage() {
       setState({
         connected: true,
         mode,
-        deviceId: detectedId,
+        deviceId: stateDeviceId,
         pinSet,
         pinFails,
+        seedSet,
+        seedHostAck,
         pinProgress: 0,
         signCancelHold: null,
         signExpiresAt: null,
@@ -616,6 +644,24 @@ export default function HomePage() {
           ? e.message
           : "Registration or seed transfer failed — check USB & firmware",
       );
+    }
+  };
+
+  /* After power loss mid–PIN: device boots INIT; host sends MODE 1 to enter SET_PIN. */
+  const resumePinSetup = async (ledger: "A" | "B") => {
+    const device =
+      ledger === "A" ? deviceARef.current : deviceBRef.current;
+    if (!device) {
+      toast.error(`Connect Ledger ${ledger} first`);
+      return;
+    }
+    try {
+      await device.send("MODE 1");
+      toast.success(`Ledger ${ledger} — finish your PIN on the device`, {
+        description: "Use the two buttons for six digits.",
+      });
+    } catch {
+      toast.error("Could not resume PIN setup");
     }
   };
 
@@ -945,6 +991,7 @@ export default function HomePage() {
             onAirdrop={() => handleAirdrop("A")}
             onConnect={() => connectHardware("A")}
             onRegister={() => registerDevice("A")}
+            onResumePin={() => resumePinSetup("A")}
             onRecover={() => recoverDevice("A")}
           />
           <LedgerCard
@@ -963,6 +1010,7 @@ export default function HomePage() {
             onAirdrop={() => handleAirdrop("B")}
             onConnect={() => connectHardware("B")}
             onRegister={() => registerDevice("B")}
+            onResumePin={() => resumePinSetup("B")}
             onRecover={() => recoverDevice("B")}
           />
         </section>
@@ -1213,6 +1261,7 @@ function LedgerCard({
   onAirdrop,
   onConnect,
   onRegister,
+  onResumePin,
   onRecover,
 }: {
   label: string;
@@ -1230,6 +1279,7 @@ function LedgerCard({
   onAirdrop: () => void;
   onConnect: () => void;
   onRegister: () => void;
+  onResumePin: () => void;
   onRecover: () => void;
 }) {
   const short = wallet ? shortAddr(wallet.address) : "—";
@@ -1316,21 +1366,52 @@ function LedgerCard({
           </div>
         )}
 
-        {showSetupFlow && hwState.mode === "INIT" && (
-          <div className="bg-muted/50 space-y-3 rounded-lg p-4">
-            <p className="text-sm font-medium">Device Setup</p>
-            <p className="text-muted-foreground text-xs">
-              Register this Arduino as Ledger {index}
-            </p>
-            <Button
-              size="sm"
-              className="w-full"
-              onClick={onRegister}
-            >
-              Register as Ledger {index}
-            </Button>
-          </div>
-        )}
+        {showSetupFlow &&
+          hwState.mode === "INIT" &&
+          hwState.seedSet &&
+          hwState.seedHostAck &&
+          !hwState.pinSet &&
+          hwState.deviceId === index && (
+            <div className="bg-muted/50 space-y-3 rounded-lg p-4">
+              <p className="text-sm font-medium">Resume PIN setup</p>
+              <p className="text-muted-foreground text-xs">
+                This device already has a seed and host confirmation. After
+                unplugging, it starts in a safe idle state — continue here, then
+                enter your PIN on the hardware.
+              </p>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={onResumePin}
+                disabled={busy}
+              >
+                Continue PIN on device
+              </Button>
+            </div>
+          )}
+
+        {showSetupFlow &&
+          hwState.mode === "INIT" &&
+          !(
+            hwState.seedSet &&
+            hwState.seedHostAck &&
+            !hwState.pinSet &&
+            hwState.deviceId === index
+          ) && (
+            <div className="bg-muted/50 space-y-3 rounded-lg p-4">
+              <p className="text-sm font-medium">Device Setup</p>
+              <p className="text-muted-foreground text-xs">
+                Register this Arduino as Ledger {index}
+              </p>
+              <Button
+                size="sm"
+                className="w-full"
+                onClick={onRegister}
+              >
+                Register as Ledger {index}
+              </Button>
+            </div>
+          )}
 
         {showSetupFlow &&
           (hwState.mode === "SET_PIN" ||

@@ -38,7 +38,7 @@
  * ────────────────────────────────────────────────────
  *   On boot / META: META:SIG=<6 hex>;SALT=<16 hex>  (host stores for AUTH)
  *   PING            → PONG
- *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>
+ *   STATE           → STATE:<mode>,<id>,<pin_set>,<fails>,<seed_set>,<seed_ack>
  *   SETID <X>       → ID_SAVED | ERR:ID_LOCKED | ERR:BAD_ID
  *   FACTORY_RESET   → FACTORY_OK — full EEPROM wipe, salt rotate, ID=A, MODE_INIT
  *   SEED_ACK        → SEED_ACKED then enters SET_PIN (MODE_INIT + registered only)
@@ -790,7 +790,11 @@ void printState() {
   Serial.print(",");
   Serial.print(isPinSet() ? "1" : "0");
   Serial.print(",");
-  Serial.println(getPinFails());
+  Serial.print(getPinFails());
+  Serial.print(",");
+  Serial.print(isSeedSetPlain() ? "1" : "0");
+  Serial.print(",");
+  Serial.println(EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL ? "1" : "0");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1288,10 +1292,8 @@ void setup() {
     enterMode(MODE_WIPED);
   } else if (devState >= DEV_STATE_PIN_SET && isPinSet()) {
     enterMode(MODE_READY);
-  } else if (devState >= DEV_STATE_REGISTERED &&
-             EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL) {
-    enterMode(MODE_SET_PIN);
   } else {
+    /* Incomplete setup (incl. power loss mid–PIN): always INIT until host syncs (MODE 1 / SEED_ACK). */
     enterMode(MODE_INIT);
   }
 
@@ -1299,6 +1301,11 @@ void setup() {
       isSeedSetPlain() &&
       EEPROM.read(ADDR_SEED_HOST_ACK) != SEED_HOST_ACK_VAL) {
     lcdShow("Save your seed!", "Then continue...");
+  } else if (currentMode == MODE_INIT && devState >= DEV_STATE_REGISTERED &&
+             isSeedSetPlain() &&
+             EEPROM.read(ADDR_SEED_HOST_ACK) == SEED_HOST_ACK_VAL &&
+             !isPinSet()) {
+    lcdShow("Open cryptX app", "to resume PIN...");
   }
 
   Serial.println("READY");
