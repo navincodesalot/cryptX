@@ -3,6 +3,7 @@ import "@/styles/globals.css";
 import { type Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { CosmicAmbient } from "@/components/cosmic/cosmic-ambient";
+import { AppProviders } from "@/components/providers/app-providers";
 import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 
@@ -24,13 +25,27 @@ export default function RootLayout({
       <body
         className={cn(
           GeistSans.className,
-          "cosmic-ui-body bg-background text-foreground antialiased",
+          "cosmic-ui-body flex min-h-svh flex-col bg-background text-foreground antialiased",
         )}
         suppressHydrationWarning
       >
         <CosmicAmbient />
-        <div className="relative z-10">{children}</div>
-        <Toaster richColors />
+        <AppProviders>
+          <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+            {children}
+          </div>
+          <Toaster richColors />
+          <footer className="relative z-10 shrink-0 py-3 text-center">
+            <a
+              href="https://github.com/navincodesalot/cryptx/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground text-xs transition-colors"
+            >
+              built with ❤️ by moonshot
+            </a>
+          </footer>
+        </AppProviders>
       </body>
     </html>
   );

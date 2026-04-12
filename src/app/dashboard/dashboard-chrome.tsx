@@ -27,7 +27,7 @@ export function DashboardChrome({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="min-h-screen bg-transparent">
+    <div className="flex min-h-0 flex-1 flex-col bg-transparent">
       <header
         className={cn(
           "sticky top-0 z-40 border-b transition-[background-color,backdrop-filter,box-shadow,border-color] duration-300",
@@ -101,7 +101,7 @@ export function DashboardChrome({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
-      {children}
+      <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </div>
   );
 }

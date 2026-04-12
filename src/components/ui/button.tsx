@@ -9,9 +9,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-[0_0_0_1px_oklch(0.52_0.07_298/28%)] [a]:hover:bg-primary/85 hover:scale-[1.02] hover:shadow-[0_0_28px_-4px_oklch(0.52_0.09_298/38%)] active:scale-[100%]",
+          "bg-primary text-primary-foreground shadow-[0_0_0_1px_oklch(0.58_0.11_298/36%)] [a]:hover:bg-primary/85 hover:scale-[1.02] hover:shadow-[0_0_28px_-4px_oklch(0.62_0.13_298/48%)] active:scale-[100%]",
         outline:
-          "border-border bg-background/80 hover:bg-muted/80 hover:text-foreground hover:scale-[1.01] hover:shadow-[0_0_20px_-6px_oklch(0.48_0.08_295/32%)] aria-expanded:bg-muted aria-expanded:text-foreground dark:border-primary/22 dark:bg-input/25 dark:hover:bg-input/45",
+          "border-border bg-background/80 hover:bg-muted/80 hover:text-foreground hover:scale-[1.01] hover:shadow-[0_0_20px_-6px_oklch(0.55_0.12_295/42%)] aria-expanded:bg-muted aria-expanded:text-foreground dark:border-primary/28 dark:bg-input/25 dark:hover:bg-input/45",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/85 hover:shadow-[0_0_18px_-8px_oklch(0.5_0.12_290/50%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:

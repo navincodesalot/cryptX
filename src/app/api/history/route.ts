@@ -108,6 +108,14 @@ export async function GET(req: Request) {
     }
     merged.sort((a, b) => b.slot - a.slot);
 
+    const displayLimit = 12;
+    const sliced = merged.slice(0, displayLimit);
+    /** Oldest shown is not necessarily the first on-chain: per-wallet fetch is capped. */
+    const hasMore =
+      merged.length > displayLimit ||
+      histA.length >= 8 ||
+      histB.length >= 8;
+
     await safeIngestLedgerEvent(
       {
         ipAddress: ip,
@@ -116,13 +124,14 @@ export async function GET(req: Request) {
         status: "SUCCESS",
         metadata: {
           route: "/api/history",
-          count: merged.length,
+          count: sliced.length,
+          hasMore,
         },
       },
       { ingestion: "server" },
     );
 
-    return NextResponse.json({ transactions: merged.slice(0, 12) });
+    return NextResponse.json({ transactions: sliced, hasMore });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     await safeIngestLedgerEvent(

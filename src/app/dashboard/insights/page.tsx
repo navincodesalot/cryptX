@@ -128,7 +128,7 @@ export default function InsightsPageWrapper() {
   return (
     <Suspense
       fallback={
-        <main className="flex min-h-screen items-center justify-center bg-transparent text-foreground">
+        <main className="flex min-h-0 flex-1 items-center justify-center bg-transparent text-foreground">
           <OrbitLoader className="text-muted-foreground size-8" />
         </main>
       }

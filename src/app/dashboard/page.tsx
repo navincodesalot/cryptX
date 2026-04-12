@@ -34,6 +34,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -44,8 +45,14 @@ import {
   canonicalLedgerDeviceId,
   parseMetaSaltHex,
 } from "@/lib/ledgerDeviceId";
+import { CopyableAddress, TxAddressCell } from "@/components/copyable-address";
 import { OrbitLoader } from "@/components/cosmic/orbit-loader";
 import { TxShootingStar } from "@/components/cosmic/tx-shooting-star";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { sendClientLedgerLog } from "@/lib/logging/clientLog";
 
 const HARDWARE_MODE = process.env.NEXT_PUBLIC_HARDWARE_MODE === "true";
@@ -75,6 +82,8 @@ interface TxRecord {
 }
 interface HistoryResponse {
   transactions: TxRecord[];
+  /** True when more txs exist on-chain than this list (API caps merged results). */
+  hasMore?: boolean;
 }
 interface ApiResponse {
   signature?: string;
@@ -114,10 +123,6 @@ const INITIAL_HW: HwState = {
 };
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
-function shortAddr(addr: string) {
-  return addr ? `${addr.slice(0, 5)}…${addr.slice(-4)}` : "—";
-}
-
 /** Renders chain time in the viewer's local timezone (avoids UTC from SSR). */
 function LocalTxTime({ blockTime }: { blockTime: number | null }) {
   const label = useMemo(() => {
@@ -435,6 +440,7 @@ export default function HomePage() {
   const [ledgerA, setLedgerA] = useState<WalletInfo | null>(null);
   const [ledgerB, setLedgerB] = useState<WalletInfo | null>(null);
   const [txHistory, setTxHistory] = useState<TxRecord[]>([]);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
 
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -524,8 +530,10 @@ export default function HomePage() {
       const res = await fetch("/api/history");
       const data = (await res.json()) as HistoryResponse;
       setTxHistory(data.transactions ?? []);
+      setHistoryHasMore(Boolean(data.hasMore));
     } catch {
       toast.error("Failed to fetch history");
+      setHistoryHasMore(false);
     } finally {
       setLoadingHistory(false);
     }
@@ -1085,36 +1093,44 @@ export default function HomePage() {
   return (
     <>
       <TxShootingStar launchKey={txLaunchSeq} />
-      <main className="text-foreground relative bg-transparent p-6 md:p-10">
-        <div className="mx-auto max-w-4xl space-y-8">
-          <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+      <main className="text-foreground relative bg-transparent px-4 py-4 md:px-8 md:py-5">
+        <div className="mx-auto max-w-4xl space-y-4 md:space-y-5">
+          <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-0.5">
+              <h1 className="text-xl font-semibold tracking-tight md:text-2xl">
                 Wallet
               </h1>
-              <p className="text-muted-foreground text-sm">
+              <p className="text-muted-foreground text-xs md:text-sm">
                 Hardware wallets · Solana testnet
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={refreshAll}
-                disabled={loadingBalances || loadingHistory}
-                title="Refresh balances and history"
-              >
-                {loadingBalances || loadingHistory ? (
-                  <OrbitLoader className="size-4" />
-                ) : (
-                  <RefreshCw className="size-4" />
-                )}
-                <span className="ml-2">Refresh</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={refreshAll}
+                      disabled={loadingBalances || loadingHistory}
+                    />
+                  }
+                >
+                  {loadingBalances || loadingHistory ? (
+                    <OrbitLoader className="size-4" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  <span className="ml-2">Refresh</span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Refresh balances and on-chain history
+                </TooltipContent>
+              </Tooltip>
             </div>
           </header>
 
-          <Separator />
+          <Separator className="my-0" />
 
           {/* No Web Serial warning */}
           {HARDWARE_MODE && !hasSerial && (
@@ -1130,7 +1146,7 @@ export default function HomePage() {
           )}
 
           {/* Ledger Cards — items-start avoids stretching short cards when one column is taller */}
-          <section className="grid grid-cols-1 items-start gap-6 sm:grid-cols-2">
+          <section className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 sm:gap-4">
             <LedgerCard
               label="Ledger A"
               index="A"
@@ -1174,18 +1190,36 @@ export default function HomePage() {
           </section>
 
           {/* Transfer indicator */}
-          <div className="text-muted-foreground flex items-center justify-center gap-3 text-sm">
-            <span className="font-mono text-xs">{shortAddr(addrA)}</span>
-            <ArrowRightLeft className="size-4" />
-            <span className="font-mono text-xs">{shortAddr(addrB)}</span>
+          <div className="text-muted-foreground flex flex-col gap-3 py-0.5 sm:flex-row sm:items-start sm:justify-center sm:gap-4">
+            {addrA ? (
+              <CopyableAddress
+                address={addrA}
+                className="min-w-0 flex-1"
+                textClassName="text-[10px] leading-snug md:text-xs"
+              />
+            ) : (
+              <span className="text-center text-xs">—</span>
+            )}
+            <ArrowRightLeft className="mx-auto size-4 shrink-0 sm:mt-1" />
+            {addrB ? (
+              <CopyableAddress
+                address={addrB}
+                className="min-w-0 flex-1"
+                textClassName="text-[10px] leading-snug md:text-xs"
+              />
+            ) : (
+              <span className="text-center text-xs">—</span>
+            )}
           </div>
 
-          <Separator />
+          <Separator className="my-0" />
 
           {/* Transaction History */}
-          <section className="space-y-3">
+          <section className="space-y-2">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Transaction History</h2>
+              <h2 className="text-base font-semibold md:text-lg">
+                Transaction History
+              </h2>
               {loadingHistory && (
                 <OrbitLoader className="text-muted-foreground size-4" />
               )}
@@ -1225,14 +1259,14 @@ export default function HomePage() {
                           <LocalTxTime blockTime={tx.blockTime} />
                         </TableCell>
                         <TableCell className="font-mono text-xs">
-                          <AddressLabel
+                          <TxAddressCell
                             addr={tx.from}
                             addrA={addrA}
                             addrB={addrB}
                           />
                         </TableCell>
                         <TableCell className="font-mono text-xs">
-                          <AddressLabel
+                          <TxAddressCell
                             addr={tx.to}
                             addrA={addrA}
                             addrB={addrB}
@@ -1256,19 +1290,46 @@ export default function HomePage() {
                           {tx.fee.toFixed(6)}
                         </TableCell>
                         <TableCell>
-                          <a
-                            href={`https://explorer.solana.com/tx/${tx.signature}?cluster=testnet`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-muted-foreground hover:text-foreground"
-                            title="View on Explorer"
-                          >
-                            <ExternalLink className="size-3" />
-                          </a>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <a
+                                  href={`https://explorer.solana.com/tx/${tx.signature}?cluster=testnet`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-muted-foreground hover:text-foreground inline-flex rounded p-1 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                                  aria-label="View transaction on Solana Explorer"
+                                />
+                              }
+                            >
+                              <ExternalLink className="size-3" />
+                            </TooltipTrigger>
+                            <TooltipContent side="left">
+                              View on Solana Explorer
+                            </TooltipContent>
+                          </Tooltip>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
+                  {historyHasMore && txHistory.length > 0 && (
+                    <TableFooter>
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell
+                          colSpan={7}
+                          className="text-muted-foreground py-2.5 text-center text-xs"
+                        >
+                          <span className="text-foreground/80 font-medium tracking-widest">
+                            ···
+                          </span>
+                          <span className="mt-1 block font-normal tracking-normal">
+                            Older on-chain transfers aren&apos;t all listed here
+                            (newest first; list is capped).
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    </TableFooter>
+                  )}
                 </Table>
               </Card>
             )}
@@ -1504,7 +1565,6 @@ function LedgerCard({
   onResumePin: () => void;
   onRecover: () => void;
 }) {
-  const short = wallet ? shortAddr(wallet.address) : "—";
   const busy = sendingNow || awaitingHardware || loading || connectingHardware;
 
   const isSetup =
@@ -1538,11 +1598,14 @@ function LedgerCard({
     (hardwareMode && (!hwState.connected || !isReady));
 
   return (
-    <Card className="flex w-full min-w-0 flex-col">
-      <CardHeader>
+    <Card
+      size="sm"
+      className="flex w-full min-w-0 flex-col gap-2 py-3 has-data-[slot=card-footer]:pb-0"
+    >
+      <CardHeader className="gap-0.5 px-3 pb-2 pt-0 [.border-b]:pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            <Cpu className="text-primary size-4" />
+          <CardTitle className="flex items-center gap-1.5 text-sm">
+            <Cpu className="text-primary size-3.5" />
             {label}
           </CardTitle>
           <div className="flex items-center gap-2">
@@ -1569,29 +1632,37 @@ function LedgerCard({
             </Badge>
           </div>
         </div>
-        <CardDescription className="inline-flex items-center gap-2 font-mono text-xs">
+        <CardDescription className="block w-full min-w-0 p-0 font-normal">
           {loading ? (
-            <>
+            <span className="text-muted-foreground inline-flex items-center gap-1.5 font-mono text-[11px]">
               <OrbitLoader className="size-3.5 shrink-0" />
               <span>Syncing…</span>
-            </>
+            </span>
+          ) : wallet ? (
+            <CopyableAddress
+              address={wallet.address}
+              className="w-full"
+              textClassName="text-[11px] md:text-xs"
+            />
           ) : (
-            short
+            <span className="text-muted-foreground font-mono text-[11px]">
+              —
+            </span>
           )}
         </CardDescription>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3 px-3">
         {/* ── Balance (always shown) ─────────────────────────── */}
         <div>
-          <p className="text-5xl font-bold tabular-nums">
+          <p className="text-3xl font-bold tabular-nums leading-none md:text-4xl">
             {loading || wallet === null ? (
-              <span className="text-muted-foreground text-3xl">—</span>
+              <span className="text-muted-foreground text-2xl">—</span>
             ) : (
               wallet.balance.toFixed(4)
             )}
           </p>
-          <p className="text-muted-foreground mt-1 text-sm">SOL</p>
+          <p className="text-muted-foreground mt-0.5 text-xs">SOL</p>
         </div>
 
         {/* ── Hardware: connect (tap this block — no separate footer connect button) ─ */}
@@ -1601,7 +1672,7 @@ function LedgerCard({
             <button
               type="button"
               className={cn(
-                "border-primary/25 bg-primary/5 flex w-full flex-col items-center gap-3 rounded-lg border py-6 transition-colors",
+                "border-primary/25 bg-primary/5 flex w-full flex-col items-center gap-2 rounded-lg border py-4 transition-colors",
                 "hover:bg-primary/10 hover:border-primary/35 focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
                 (busy || connectingHardware || isBlacklisted) &&
                   "pointer-events-none opacity-50",
@@ -1610,22 +1681,22 @@ function LedgerCard({
               onClick={onConnect}
               disabled={busy || connectingHardware || isBlacklisted}
             >
-              <Usb className="text-primary size-8 shrink-0" />
+              <Usb className="text-primary size-7 shrink-0" />
               <p className="text-center text-sm leading-snug">
                 <span className="text-primary block font-medium">
                   {connectingHardware ? "Connecting…" : "Connect a ledger"}
                 </span>
                 {!connectingHardware && (
-                  <span className="text-muted-foreground mt-1 block text-xs">
+                  <span className="text-muted-foreground mt-0.5 block text-xs">
                     Tap here to pair over USB
                   </span>
                 )}
               </p>
             </button>
           ) : (
-            <div className="border-muted-foreground/20 bg-muted/30 flex flex-col items-center gap-2 rounded-lg border py-6">
-              <Usb className="text-muted-foreground size-8" />
-              <p className="text-muted-foreground px-4 text-center text-sm">
+            <div className="border-muted-foreground/20 bg-muted/30 flex flex-col items-center gap-1.5 rounded-lg border py-4">
+              <Usb className="text-muted-foreground size-7" />
+              <p className="text-muted-foreground px-3 text-center text-xs">
                 Web Serial is not available in this browser. Use Chrome or Edge
                 to connect a ledger.
               </p>
@@ -1638,9 +1709,9 @@ function LedgerCard({
           hwState.seedHostAck &&
           !hwState.pinSet &&
           hwState.deviceId === index && (
-            <div className="bg-muted/50 space-y-3 rounded-lg p-4">
-              <p className="text-sm font-medium">Resume PIN setup</p>
-              <p className="text-muted-foreground text-xs">
+            <div className="bg-muted/50 space-y-2 rounded-lg p-3">
+              <p className="text-xs font-medium">Resume PIN setup</p>
+              <p className="text-muted-foreground text-[11px] leading-snug">
                 This device already has a seed and host confirmation. After
                 unplugging, it starts in a safe idle state — continue here, then
                 enter your PIN on the hardware.
@@ -1664,9 +1735,9 @@ function LedgerCard({
             !hwState.pinSet &&
             hwState.deviceId === index
           ) && (
-            <div className="bg-muted/50 space-y-3 rounded-lg p-4">
-              <p className="text-sm font-medium">Device Setup</p>
-              <p className="text-muted-foreground text-xs">
+            <div className="bg-muted/50 space-y-2 rounded-lg p-3">
+              <p className="text-xs font-medium">Device Setup</p>
+              <p className="text-muted-foreground text-[11px]">
                 Register this device as Ledger {index}
               </p>
               <Button size="sm" className="w-full" onClick={onRegister}>
@@ -1677,11 +1748,11 @@ function LedgerCard({
 
         {showSetupFlow &&
           (hwState.mode === "SET_PIN" || hwState.mode === "CONFIRM_PIN") && (
-            <div className="bg-muted/50 space-y-3 rounded-lg p-4">
-              <p className="text-sm font-medium">
+            <div className="bg-muted/50 space-y-2 rounded-lg p-3">
+              <p className="text-xs font-medium">
                 {hwState.mode === "SET_PIN" ? "Create PIN" : "Confirm PIN"}
               </p>
-              <p className="text-muted-foreground text-xs">
+              <p className="text-muted-foreground text-[11px] leading-snug">
                 Press and release one button at a time: btn 1 = digit 1, btn 2 =
                 digit 2. The digit is counted on release. Six digits submit
                 automatically. If both buttons are pressed together, nothing is
@@ -1692,10 +1763,10 @@ function LedgerCard({
           )}
 
         {showSetupFlow && isWiped && (
-          <div className="bg-destructive/10 space-y-3 rounded-lg p-4">
-            <div className="flex items-center gap-2">
-              <ShieldAlert className="text-destructive size-4" />
-              <p className="text-destructive text-sm font-medium">
+          <div className="bg-destructive/10 space-y-2 rounded-lg p-3">
+            <div className="flex items-center gap-1.5">
+              <ShieldAlert className="text-destructive size-3.5" />
+              <p className="text-destructive text-xs font-medium">
                 Device Wiped
               </p>
             </div>
@@ -1715,11 +1786,11 @@ function LedgerCard({
         )}
 
         {hardwareMode && hwState.connected && isSigning && (
-          <div className="border-primary/35 bg-primary/10 space-y-3 rounded-lg border p-4 shadow-[0_0_24px_-12px_oklch(0.55_0.1_300/28%)]">
-            <p className="text-primary text-sm font-medium">
+          <div className="border-primary/35 bg-primary/10 space-y-2 rounded-lg border p-3 shadow-[0_0_24px_-12px_oklch(0.55_0.1_300/28%)]">
+            <p className="text-primary text-xs font-medium">
               Signing transaction
             </p>
-            <p className="text-muted-foreground text-xs">
+            <p className="text-muted-foreground text-[11px]">
               Enter your PIN on the device using the two buttons.
             </p>
             <PinDots filled={hwState.pinProgress} />
@@ -1734,7 +1805,7 @@ function LedgerCard({
         )}
       </CardContent>
 
-      <CardFooter className="flex flex-col gap-2 pb-5">
+      <CardFooter className="flex flex-col gap-1.5 px-3 pb-3 pt-2">
         {isBlacklisted && (
           <div className="bg-destructive/10 flex w-full items-center gap-2 rounded-lg px-3 py-2">
             <ShieldAlert className="text-destructive size-4 shrink-0" />
@@ -1803,20 +1874,3 @@ function LedgerCard({
   );
 }
 
-/* ─── AddressLabel ───────────────────────────────────────────────────────── */
-function AddressLabel({
-  addr,
-  addrA,
-  addrB,
-}: {
-  addr: string;
-  addrA: string;
-  addrB: string;
-}) {
-  if (!addr) return <span className="text-muted-foreground">—</span>;
-  if (addr === addrA)
-    return <span className="text-primary font-semibold">Ledger A</span>;
-  if (addr === addrB)
-    return <span className="font-semibold text-violet-400">Ledger B</span>;
-  return <span>{shortAddr(addr)}</span>;
-}
