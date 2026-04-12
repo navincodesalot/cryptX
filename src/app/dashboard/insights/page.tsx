@@ -14,7 +14,7 @@ import {
 import { OrbitLoader } from "@/components/cosmic/orbit-loader";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -70,6 +70,9 @@ interface LogsResponse {
   logs: LogEntry[];
   count: number;
 }
+
+/** Raw log table: page size between 10–20 for readability */
+const LOGS_PAGE_SIZE = 15;
 
 const RISK_COLORS = {
   LOW: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
@@ -148,12 +151,14 @@ function InsightsPage() {
   const [loadingAnalysis, setLoadingAnalysis] = useState(true);
   const [loadingLogs, setLoadingLogs] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [logPage, setLogPage] = useState(0);
 
   useEffect(() => {
     if (!deviceId.startsWith("ledger-")) return;
 
     setLoadingAnalysis(true);
     setLoadingLogs(true);
+    setLogPage(0);
 
     fetch(`/api/insights?deviceId=${encodeURIComponent(deviceId)}`)
       .then((r) => r.json() as Promise<InsightsResponse>)
@@ -176,6 +181,19 @@ function InsightsPage() {
       })
       .finally(() => setLoadingLogs(false));
   }, [deviceId]);
+
+  const logPageCount = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
+
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil(logs.length / LOGS_PAGE_SIZE) - 1);
+    setLogPage((p) => Math.min(p, lastPage));
+  }, [logs]);
+
+  const logPageSafe = Math.min(logPage, logPageCount - 1);
+  const paginatedLogs = useMemo(() => {
+    const start = logPageSafe * LOGS_PAGE_SIZE;
+    return logs.slice(start, start + LOGS_PAGE_SIZE);
+  }, [logs, logPageSafe]);
 
   if (!deviceId.startsWith("ledger-")) {
     return (
@@ -343,52 +361,102 @@ function InsightsPage() {
               </CardContent>
             </Card>
           ) : (
-            <Card>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-8" />
-                    <TableHead>Time</TableHead>
-                    <TableHead>Action</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Details</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {logs.map((log, i) => (
-                    <TableRow key={log.id ?? i}>
-                      <TableCell>
-                        {log.status === "SUCCESS" ? (
-                          <CheckCircle2 className="size-3.5 text-emerald-400" />
-                        ) : log.status === "FAIL" ? (
-                          <AlertTriangle className="text-destructive size-3.5" />
-                        ) : (
-                          <CircleDashed className="text-muted-foreground size-3.5" />
-                        )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs tabular-nums">
-                        <LogTimestamp iso={log.timestamp} />
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            log.action === "MALICIOUS_ACTIVITY"
-                              ? "destructive"
-                              : "secondary"
-                          }
-                          className="text-[10px]"
-                        >
-                          {log.action}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs">{log.status}</TableCell>
-                      <TableCell>
-                        <MetadataPreview metadata={log.metadata ?? {}} />
-                      </TableCell>
+            <Card className="overflow-hidden p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-8" />
+                      <TableHead>Time</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Details</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedLogs.map((log, i) => (
+                      <TableRow
+                        key={log.id ?? `${logPageSafe * LOGS_PAGE_SIZE + i}`}
+                      >
+                        <TableCell>
+                          {log.status === "SUCCESS" ? (
+                            <CheckCircle2 className="size-3.5 text-emerald-400" />
+                          ) : log.status === "FAIL" ? (
+                            <AlertTriangle className="text-destructive size-3.5" />
+                          ) : (
+                            <CircleDashed className="text-muted-foreground size-3.5" />
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs tabular-nums">
+                          <LogTimestamp iso={log.timestamp} />
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              log.action === "MALICIOUS_ACTIVITY"
+                                ? "destructive"
+                                : "secondary"
+                            }
+                            className="text-[10px]"
+                          >
+                            {log.action}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">{log.status}</TableCell>
+                        <TableCell>
+                          <MetadataPreview metadata={log.metadata ?? {}} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              {logs.length > 0 && (
+                <div className="bg-muted/30 border-border flex flex-col gap-3 border-t px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-muted-foreground text-xs tabular-nums">
+                    Showing{" "}
+                    <span className="text-foreground font-medium">
+                      {logPageSafe * LOGS_PAGE_SIZE + 1}
+                      –
+                      {Math.min(
+                        (logPageSafe + 1) * LOGS_PAGE_SIZE,
+                        logs.length,
+                      )}
+                    </span>{" "}
+                    of <span className="text-foreground">{logs.length}</span>{" "}
+                    {logs.length === 1 ? "entry" : "entries"}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={logPageSafe <= 0}
+                      onClick={() =>
+                        setLogPage((p) => Math.max(0, p - 1))
+                      }
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-muted-foreground px-1 text-xs tabular-nums">
+                      Page {logPageSafe + 1} of {logPageCount}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={logPageSafe >= logPageCount - 1}
+                      onClick={() =>
+                        setLogPage((p) =>
+                          Math.min(logPageCount - 1, p + 1),
+                        )
+                      }
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              )}
             </Card>
           )}
         </section>
