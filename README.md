@@ -1,5 +1,6 @@
 <h2 align="center"><strong>Best Financial Hack</strong> (Capital One)</h2>
 <h3 align="center"><strong>2nd place</strong> — Best App Dev Track</h3>
+<p align="center"><em>At Bitcamp 2026</em></p>
 
 # cryptX
 
