@@ -4,6 +4,19 @@
 
 **[cryptx.work](https://cryptx.work)**
 
+## Demo
+
+<p align="center">
+  <video src="" controls width="480">
+    Your browser does not support the video tag.
+  </video>
+</p>
+
+<h2 align="center">Won:</h2>
+
+<h3 align="center"><strong>Best Financial Hack</strong> (Capital One)</h3>
+<h3 align="center"><strong>2nd place</strong> — Best App Dev Track</h3>
+
 ---
 
 cryptX is a fully functional hardware crypto wallet built on Solana — bringing real signing security to blockchain transactions without the $150 price tag. Inspired by the *cryptex*, a cylindrical puzzle box designed to hide secrets, the device enforces physical approval for every transaction, just like a real Ledger.
