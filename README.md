@@ -1,3 +1,6 @@
+<h2 align="center"><strong>Best Financial Hack</strong> (Capital One)</h2>
+<h3 align="center"><strong>2nd place</strong> — Best App Dev Track</h3>
+
 # cryptX
 
 > A reverse-engineered hardware ledger for the Solana blockchain, with custom PIN + seed phrase authentication, real-time balance monitoring, and live fraud detection using log analysis.
@@ -16,14 +19,9 @@
   <a href="https://www.youtube.com/watch?v=ckU2XB6r1WQ">Watch on YouTube</a>
 </p>
 
-<h2 align="center">Won:</h2>
-
-<h3 align="center"><strong>Best Financial Hack</strong> (Capital One)</h3>
-<h3 align="center"><strong>2nd place</strong> — Best App Dev Track</h3>
-
 ---
 
-cryptX is a fully functional hardware crypto wallet built on Solana — bringing real signing security to blockchain transactions without the $150 price tag. Inspired by the *cryptex*, a cylindrical puzzle box designed to hide secrets, the device enforces physical approval for every transaction, just like a real Ledger.
+cryptX is a fully functional hardware crypto wallet built on Solana — bringing real signing security to blockchain transactions without the $150 price tag. Inspired by the _cryptex_, a cylindrical puzzle box designed to hide secrets, the device enforces physical approval for every transaction, just like a real Ledger.
 
 ---
 
@@ -59,12 +57,12 @@ The private key never leaves the device. The Arduino constructs and signs the tr
 
 ## Hardware
 
-| Component | Purpose |
-|---|---|
-| Arduino Uno | Main microcontroller running the wallet state machine |
-| Grove Base Shield | Stacking shield that breaks out Arduino pins to Grove connectors for clean module wiring |
-| Grove LCD (RGB backlit, I2C) | Displays PIN prompts, seed words, and transaction details |
-| 2× Push buttons | Physical confirm / reject controls |
+| Component                    | Purpose                                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| Arduino Uno                  | Main microcontroller running the wallet state machine                                    |
+| Grove Base Shield            | Stacking shield that breaks out Arduino pins to Grove connectors for clean module wiring |
+| Grove LCD (RGB backlit, I2C) | Displays PIN prompts, seed words, and transaction details                                |
+| 2× Push buttons              | Physical confirm / reject controls                                                       |
 
 ---
 
@@ -89,6 +87,7 @@ Three consecutive wrong PIN attempts trigger a full EEPROM wipe, destroying all 
 Every device action — connection events, PIN attempts, transaction signings — is logged and fed into a Gemini AI agent via the `/api/audit` and `/api/insights` endpoints.
 
 The agent flags patterns including:
+
 - Repeated authentication failures
 - Mid-transaction disconnects
 - Unusual signing velocity
@@ -101,6 +100,7 @@ Flagged devices are written to a blacklist and blocked from future transaction s
 ## Tech Stack
 
 **Firmware**
+
 - C++ (Arduino)
 - SipHash-2-4
 - BIP-39 word list
@@ -108,6 +108,7 @@ Flagged devices are written to a blacklist and blocked from future transaction s
 - EEPROM
 
 **Dashboard**
+
 - [Next.js 16](https://nextjs.org) (App Router)
 - [Solana Web3.js](https://solana-labs.github.io/solana-web3.js/)
 - [Vercel AI SDK](https://sdk.vercel.ai) + Gemini
@@ -180,20 +181,20 @@ Open `firmware/ledger/ledger.ino` in the Arduino IDE, select the **Arduino Uno**
 
 ## API Reference
 
-| Route | Method | Description |
-|---|---|---|
-| `/api/balance` | GET | Fetch live SOL balance for a wallet |
-| `/api/transfer` | POST | Relay a signed transaction to Solana |
-| `/api/history` | GET | Pull on-chain transaction history |
-| `/api/log` | POST | Ingest a device event log |
-| `/api/logs` | GET | Retrieve stored device logs |
-| `/api/audit` | GET/POST | Read or write security audit records |
-| `/api/insights` | POST | Run Gemini AI analysis on device logs |
-| `/api/security` | GET/POST | Manage device blacklist |
-| `/api/seed` | POST | Verify BIP-39 seed phrase |
-| `/api/session` | GET/POST | Manage active device session |
-| `/api/airdrop` | POST | Request testnet SOL airdrop |
-| `/api/health` | GET | Service health check |
+| Route           | Method   | Description                           |
+| --------------- | -------- | ------------------------------------- |
+| `/api/balance`  | GET      | Fetch live SOL balance for a wallet   |
+| `/api/transfer` | POST     | Relay a signed transaction to Solana  |
+| `/api/history`  | GET      | Pull on-chain transaction history     |
+| `/api/log`      | POST     | Ingest a device event log             |
+| `/api/logs`     | GET      | Retrieve stored device logs           |
+| `/api/audit`    | GET/POST | Read or write security audit records  |
+| `/api/insights` | POST     | Run Gemini AI analysis on device logs |
+| `/api/security` | GET/POST | Manage device blacklist               |
+| `/api/seed`     | POST     | Verify BIP-39 seed phrase             |
+| `/api/session`  | GET/POST | Manage active device session          |
+| `/api/airdrop`  | POST     | Request testnet SOL airdrop           |
+| `/api/health`   | GET      | Service health check                  |
 
 ---
 
