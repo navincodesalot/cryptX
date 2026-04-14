@@ -7,9 +7,13 @@
 ## Demo
 
 <p align="center">
-  <video src="" controls width="480">
-    Your browser does not support the video tag.
-  </video>
+  <a href="https://www.youtube.com/watch?v=ckU2XB6r1WQ">
+    <img src="https://img.youtube.com/vi/ckU2XB6r1WQ/hqdefault.jpg" alt="cryptX demo — play on YouTube" width="720" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=ckU2XB6r1WQ">Watch on YouTube</a>
 </p>
 
 <h2 align="center">Won:</h2>
